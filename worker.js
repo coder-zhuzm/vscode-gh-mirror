@@ -521,7 +521,7 @@ function renderExtensionsPage(origin) {
 
         function card(item) {
           const icon = item.iconUrl ? '<img src="' + escapeHtml(item.iconUrl) + '" alt="icon">' : '<div class="icon-fallback">VS</div>';
-          return 
+          return (
             '<article class="result-card card glass">'
             + '<div class="result-top">'
             + '<div class="result-icon">' + icon + '</div>'
@@ -534,7 +534,8 @@ function renderExtensionsPage(origin) {
             + '<a class="btn btn-secondary" href="' + item.detailPage + '">查看详情</a>'
             + (item.downloadUrl ? '<a class="btn btn-primary" href="' + item.downloadUrl + '" target="_blank">下载最新 VSIX</a>' : '')
             + '</div>'
-            + '</article>';
+            + '</article>'
+          );
         }
 
         async function search(q, pushState = true) {
