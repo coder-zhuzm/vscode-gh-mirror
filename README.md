@@ -1,116 +1,157 @@
-# 🚀 GitHub Mirror
+# Download Hub Worker
 
-A high-speed GitHub release mirror powered by Cloudflare Workers. Transform GitHub release URLs into blazing-fast, globally cached download links.
+A Cloudflare Worker that combines two jobs in one lightweight project:
 
-![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
+- **GitHub Release acceleration**: turn GitHub release asset links into cached mirror links
+- **VSCode extension discovery and download**: search Open VSX and download VSIX files through the same proxy layer
 
-## ✨ Features
+This project started from `creasydude/github-mirror` and was reshaped into a dual-purpose developer download hub.
 
-- **⚡ Edge Cached** - Files are cached at Cloudflare's global CDN for maximum download speeds
-- **🔄 Resumable Downloads** - Full support for Range requests and download managers
-- **🌍 Global Network** - Served from 300+ data centers worldwide
-- **🎨 Modern UI** - Beautiful, responsive interface with glassmorphism design
-- **📋 One-Click Copy** - Easily copy mirror links to clipboard
-- **🔒 Reliable** - Powered by Cloudflare's robust infrastructure
+## What it does
 
-## 🚀 Quick Start
+### 1. GitHub Release mirror
+- Accepts GitHub release asset URLs
+- Generates mirror links on your own Worker domain
+- Preserves streaming downloads
+- Supports `Range` requests for resumable downloads
+- Uses long edge caching for binary files
 
-### Deploy to Cloudflare Workers
+### 2. VSCode extension search + download
+- Searches the Open VSX registry
+- Returns extension metadata and versions
+- Generates worker-hosted VSIX download links
+- Reuses the same binary proxy layer and cache strategy
 
-1. **Clone the repository**
+## Current architecture
 
-   ```bash
-   git clone https://github.com/creasydude/github-mirror.git
-   cd github-mirror
-   ```
+Everything is currently kept in a single `worker.js` for easy deployment.
 
-2. **Install Wrangler CLI**
+Main route groups:
 
-   ```bash
-   npm install -g wrangler
-   ```
+- `/` — unified landing page
+- `/health` — health endpoint
+- `/api/github/resolve?url=...` — resolve GitHub release URL to mirror URL
+- `/api/extensions/search?q=...` — search Open VSX
+- `/api/extensions/:namespace/:name` — extension detail JSON
+- `/api/extensions/:namespace/:name/:version/download` — proxied VSIX download
+- `/:owner/:repo/releases/download/:tag/:file` — proxied GitHub release asset download
 
-3. **Login to Cloudflare**
+## Supported upstreams
 
-   ```bash
-   wrangler login
-   ```
+The Worker only proxies allowed upstream hosts:
 
-4. **Deploy**
-   ```bash
-   wrangler deploy
-   ```
+- `github.com`
+- `open-vsx.org`
+- `objects.githubusercontent.com`
+- `release-assets.githubusercontent.com`
 
-### Configuration
+This is intentional. It is **not** an open generic proxy.
 
-Create a `wrangler.toml` file in the project root:
+## Cache strategy
+
+- Search results: short cache (`15 min`)
+- Extension detail: medium cache (`30 min`)
+- Binary downloads: long cache (`1 year`)
+
+Response headers:
+
+- `X-Worker-Cache: HIT|MISS`
+- `X-Proxy-Source: github|openvsx`
+
+## Deploy
+
+### 1. Install Wrangler
+
+```bash
+npm install -g wrangler
+```
+
+### 2. Login
+
+```bash
+wrangler login
+```
+
+### 3. Create `wrangler.toml`
 
 ```toml
-name = "github-mirror"
+name = "download-hub-worker"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 ```
 
-## 📖 Usage
+### 4. Deploy
 
-1. Visit your deployed worker URL
-2. Paste a GitHub release URL (e.g., `https://github.com/user/repo/releases/download/v1.0/file.zip`)
-3. Click "Generate Mirror Link"
-4. Use the generated mirror URL for faster downloads
-
-### Example
-
-**Original URL:**
-
+```bash
+wrangler deploy
 ```
+
+## Local development
+
+You can run it locally with Wrangler:
+
+```bash
+wrangler dev
+```
+
+## Example usage
+
+### GitHub release mirror
+
+Original URL:
+
+```text
 https://github.com/microsoft/vscode/releases/download/1.85.0/VSCode-win32-x64-1.85.0.zip
 ```
 
-**Mirror URL:**
+Mirror URL after deployment:
 
-```
+```text
 https://your-worker.workers.dev/microsoft/vscode/releases/download/1.85.0/VSCode-win32-x64-1.85.0.zip
 ```
 
-## 🔧 How It Works
+### Search extensions
 
-1. **Request Received** - User requests a file through the mirror
-2. **Cache Check** - Worker checks Cloudflare's edge cache
-3. **Cache Hit** - If cached, serve immediately (blazing fast!)
-4. **Cache Miss** - Fetch from GitHub, cache for 1 year, then serve
-5. **Global Distribution** - Cached files available at all edge locations
+```text
+GET /api/extensions/search?q=python
+```
 
-## 📊 Performance
+### Extension detail
 
-| Metric  | Direct GitHub | GitHub Mirror     |
-| ------- | ------------- | ----------------- |
-| Latency | Variable      | Low (edge-served) |
-| Speed   | Standard      | Accelerated       |
-| Caching | None          | 1 Year TTL        |
-| Resume  | Limited       | Full Support      |
+```text
+GET /api/extensions/ms-python/python
+```
 
-## 🛠️ Technical Details
+### Download VSIX through the Worker
 
-- **Cache TTL**: 1 year (31,536,000 seconds)
-- **CORS**: Enabled for all origins
-- **Headers**: Custom `X-Worker-Cache` header indicates HIT/MISS
-- **Streaming**: Low memory footprint with response streaming
+```text
+GET /api/extensions/ms-python/python/<version>/download
+```
 
-## 📄 License
+## Notes and limitations
 
-MIT License - feel free to use this project for any purpose.
+- The VSCode extension part currently targets **Open VSX**, not the full Microsoft Marketplace.
+- The GitHub mirror part only supports **release asset paths**, not arbitrary GitHub pages.
+- This is an MVP structure focused on easy Cloudflare deployment and later iteration.
 
-## 🤝 Contributing
+## Suggested next improvements
 
-Contributions are welcome! Feel free to open issues or submit pull requests.
+- Split `worker.js` into route/service modules
+- Add a dedicated extension detail page in the UI
+- Add preset popular extension sections by category
+- Add optional KV/R2 support for metadata or durable caching
+- Improve GitHub URL parsing for more edge cases
+- Add rate limiting if you expose the worker publicly
 
-## 👤 Author
+## Local project path
 
-**[@creasydude](https://github.com/creasydude)**
+This project is currently cloned and being modified at:
 
----
+```text
+/root/.openclaw/workspace/projects/vscode-gh-mirror
+```
 
-<p align="center">
-  Made with ❤️ and powered by <a href="https://workers.cloudflare.com">Cloudflare Workers</a>
-</p>
+## Credit
+
+Original base project:
+- `creasydude/github-mirror`

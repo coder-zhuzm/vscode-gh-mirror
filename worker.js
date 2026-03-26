@@ -1,881 +1,885 @@
 /**
- * CLOUDFLARE WORKER: GITHUB MIRROR
- * 
- * Features:
- * 1. Edge Caching (Fast downloads for popular files)
- * 2. Streaming (Low memory usage)
- * 3. Range Requests (Supports Resume/Download Managers)
- * 4. Modern Premium UI
+ * Cloudflare Worker: VSCode Extensions + GitHub Release Mirror
+ *
+ * Combined features:
+ * - GitHub release acceleration with edge caching and range support
+ * - VS Code extension search/detail via Open VSX
+ * - VSIX download acceleration via the same proxy core
+ *
+ * Notes:
+ * - Only whitelisted upstreams are proxied
+ * - Download streaming is preserved for large files
+ * - Search/detail endpoints use shorter cache TTLs than binary downloads
  */
 
 const GITHUB_URL = 'https://github.com';
-const CACHE_TTL = 31536000; // 1 Year Cache (since release files don't change)
+const OPEN_VSX_API = 'https://open-vsx.org/api';
+const OPEN_VSX_HOST = 'open-vsx.org';
+const DOWNLOAD_CACHE_TTL = 31536000; // 1 year
+const SEARCH_CACHE_TTL = 900; // 15 min
+const DETAIL_CACHE_TTL = 1800; // 30 min
+
+const HOT_EXTENSIONS = [
+  'ms-python.python',
+  'esbenp.prettier-vscode',
+  'dbaeumer.vscode-eslint',
+  'ms-vscode.cpptools',
+  'golang.go',
+  'ms-azuretools.vscode-docker',
+  'redhat.java',
+  'eamodio.gitlens'
+];
 
 const HTML_PAGE = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GitHub Mirror - High Speed Downloads</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        *, *::before, *::after {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        :root {
-            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            --accent-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            --success-gradient: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-            --bg-dark: #0a0a0f;
-            --bg-card: rgba(255, 255, 255, 0.03);
-            --bg-card-hover: rgba(255, 255, 255, 0.06);
-            --glass-bg: rgba(255, 255, 255, 0.05);
-            --glass-border: rgba(255, 255, 255, 0.1);
-            --text-primary: #ffffff;
-            --text-secondary: rgba(255, 255, 255, 0.6);
-            --text-muted: rgba(255, 255, 255, 0.4);
-            --purple-glow: rgba(102, 126, 234, 0.4);
-            --pink-glow: rgba(240, 147, 251, 0.3);
-        }
-
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg-dark);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-            position: relative;
-            overflow-x: hidden;
-        }
-
-        /* Animated Background */
-        .bg-gradient {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: 
-                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(102, 126, 234, 0.3), transparent),
-                radial-gradient(ellipse 60% 40% at 100% 50%, rgba(240, 147, 251, 0.15), transparent),
-                radial-gradient(ellipse 60% 40% at 0% 50%, rgba(102, 126, 234, 0.15), transparent);
-            pointer-events: none;
-            z-index: 0;
-        }
-
-        .floating-orbs {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            overflow: hidden;
-            pointer-events: none;
-            z-index: 0;
-        }
-
-        .orb {
-            position: absolute;
-            border-radius: 50%;
-            filter: blur(80px);
-            animation: float 20s infinite ease-in-out;
-        }
-
-        .orb-1 {
-            width: 600px;
-            height: 600px;
-            background: rgba(102, 126, 234, 0.15);
-            top: -200px;
-            left: -100px;
-            animation-delay: 0s;
-        }
-
-        .orb-2 {
-            width: 500px;
-            height: 500px;
-            background: rgba(240, 147, 251, 0.12);
-            bottom: -150px;
-            right: -100px;
-            animation-delay: -5s;
-        }
-
-        .orb-3 {
-            width: 400px;
-            height: 400px;
-            background: rgba(56, 239, 125, 0.08);
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            animation-delay: -10s;
-        }
-
-        @keyframes float {
-            0%, 100% { transform: translate(0, 0) scale(1); }
-            25% { transform: translate(30px, -30px) scale(1.05); }
-            50% { transform: translate(-20px, 20px) scale(0.95); }
-            75% { transform: translate(20px, 30px) scale(1.02); }
-        }
-
-        /* Main Container */
-        .main-container {
-            position: relative;
-            z-index: 1;
-            width: 100%;
-            max-width: 640px;
-        }
-
-        /* Logo & Header */
-        .header {
-            text-align: center;
-            margin-bottom: 40px;
-        }
-
-        .logo-container {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 16px;
-            margin-bottom: 20px;
-        }
-
-        .logo-icon {
-            width: 56px;
-            height: 56px;
-            background: var(--primary-gradient);
-            border-radius: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow: 0 8px 32px var(--purple-glow);
-            position: relative;
-            overflow: hidden;
-        }
-
-        .logo-icon::before {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background: linear-gradient(135deg, rgba(255,255,255,0.2) 0%, transparent 50%);
-        }
-
-        .logo-icon svg {
-            width: 32px;
-            height: 32px;
-            fill: white;
-            position: relative;
-            z-index: 1;
-        }
-
-        .logo-text {
-            font-size: 32px;
-            font-weight: 800;
-            background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.8) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            letter-spacing: -0.5px;
-        }
-
-        .tagline {
-            color: var(--text-secondary);
-            font-size: 16px;
-            font-weight: 500;
-            max-width: 400px;
-            margin: 0 auto;
-            line-height: 1.6;
-        }
-
-        /* Glass Card */
-        .glass-card {
-            background: var(--glass-bg);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border: 1px solid var(--glass-border);
-            border-radius: 24px;
-            padding: 40px;
-            box-shadow: 
-                0 4px 24px rgba(0, 0, 0, 0.2),
-                inset 0 1px 0 rgba(255, 255, 255, 0.05);
-        }
-
-        /* Input Group */
-        .input-group {
-            margin-bottom: 24px;
-        }
-
-        .input-label {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 12px;
-            color: var(--text-primary);
-            font-size: 14px;
-            font-weight: 600;
-        }
-
-        .input-label svg {
-            width: 18px;
-            height: 18px;
-            opacity: 0.7;
-        }
-
-        .input-wrapper {
-            position: relative;
-        }
-
-        .url-input {
-            width: 100%;
-            padding: 18px 20px;
-            padding-left: 52px;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 14px;
-            color: var(--text-primary);
-            font-size: 15px;
-            font-family: inherit;
-            transition: all 0.3s ease;
-            outline: none;
-        }
-
-        .url-input::placeholder {
-            color: var(--text-muted);
-        }
-
-        .url-input:focus {
-            border-color: rgba(102, 126, 234, 0.5);
-            box-shadow: 
-                0 0 0 4px rgba(102, 126, 234, 0.1),
-                0 4px 20px rgba(102, 126, 234, 0.15);
-        }
-
-        .input-icon {
-            position: absolute;
-            left: 18px;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 20px;
-            height: 20px;
-            color: var(--text-muted);
-            pointer-events: none;
-        }
-
-        /* Primary Button */
-        .btn-primary {
-            width: 100%;
-            padding: 18px 32px;
-            background: var(--primary-gradient);
-            border: none;
-            border-radius: 14px;
-            color: white;
-            font-size: 16px;
-            font-weight: 600;
-            font-family: inherit;
-            cursor: pointer;
-            position: relative;
-            overflow: hidden;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 20px var(--purple-glow);
-        }
-
-        .btn-primary::before {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background: linear-gradient(135deg, rgba(255,255,255,0.2) 0%, transparent 50%);
-            opacity: 0;
-            transition: opacity 0.3s ease;
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 32px var(--purple-glow);
-        }
-
-        .btn-primary:hover::before {
-            opacity: 1;
-        }
-
-        .btn-primary:active {
-            transform: translateY(0);
-        }
-
-        .btn-content {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            position: relative;
-            z-index: 1;
-        }
-
-        .btn-content svg {
-            width: 20px;
-            height: 20px;
-        }
-
-        /* Result Section */
-        .result-section {
-            margin-top: 32px;
-            display: none;
-            animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-
-        .result-section.active {
-            display: block;
-        }
-
-        @keyframes slideUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .result-label {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 12px;
-            color: #38ef7d;
-            font-size: 14px;
-            font-weight: 600;
-        }
-
-        .result-label svg {
-            width: 18px;
-            height: 18px;
-        }
-
-        .result-box {
-            background: rgba(0, 0, 0, 0.4);
-            border: 1px solid rgba(56, 239, 125, 0.2);
-            border-radius: 14px;
-            padding: 6px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .result-link {
-            flex: 1;
-            padding: 12px 16px;
-            color: #38ef7d;
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 13px;
-            text-decoration: none;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            transition: color 0.2s ease;
-        }
-
-        .result-link:hover {
-            color: #5cff94;
-        }
-
-        .btn-copy {
-            padding: 12px 20px;
-            background: rgba(56, 239, 125, 0.15);
-            border: 1px solid rgba(56, 239, 125, 0.3);
-            border-radius: 10px;
-            color: #38ef7d;
-            font-size: 14px;
-            font-weight: 600;
-            font-family: inherit;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.2s ease;
-            white-space: nowrap;
-        }
-
-        .btn-copy svg {
-            width: 16px;
-            height: 16px;
-        }
-
-        .btn-copy:hover {
-            background: rgba(56, 239, 125, 0.25);
-        }
-
-        .btn-copy.copied {
-            background: var(--success-gradient);
-            border-color: transparent;
-            color: white;
-        }
-
-        /* Features Grid */
-        .features {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 16px;
-            margin-top: 40px;
-        }
-
-        .feature-card {
-            background: var(--glass-bg);
-            border: 1px solid var(--glass-border);
-            border-radius: 16px;
-            padding: 20px;
-            text-align: center;
-            transition: all 0.3s ease;
-        }
-
-        .feature-card:hover {
-            background: var(--bg-card-hover);
-            transform: translateY(-4px);
-            border-color: rgba(102, 126, 234, 0.3);
-        }
-
-        .feature-icon {
-            width: 44px;
-            height: 44px;
-            margin: 0 auto 12px;
-            background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(240, 147, 251, 0.2) 100%);
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .feature-icon svg {
-            width: 22px;
-            height: 22px;
-            color: #a78bfa;
-        }
-
-        .feature-title {
-            color: var(--text-primary);
-            font-size: 13px;
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-
-        .feature-desc {
-            color: var(--text-muted);
-            font-size: 11px;
-            line-height: 1.4;
-        }
-
-        /* Footer */
-        .footer {
-            margin-top: 40px;
-            text-align: center;
-            color: var(--text-muted);
-            font-size: 13px;
-        }
-
-        .footer a {
-            color: var(--text-secondary);
-            text-decoration: none;
-            transition: color 0.2s ease;
-        }
-
-        .footer a:hover {
-            color: var(--text-primary);
-        }
-
-        /* Responsive */
-        @media (max-width: 600px) {
-            .glass-card {
-                padding: 28px 20px;
-            }
-
-            .logo-text {
-                font-size: 26px;
-            }
-
-            .features {
-                grid-template-columns: 1fr;
-            }
-
-            .feature-card {
-                display: flex;
-                align-items: center;
-                gap: 16px;
-                text-align: left;
-                padding: 16px;
-            }
-
-            .feature-icon {
-                margin: 0;
-                flex-shrink: 0;
-            }
-
-            .feature-content {
-                flex: 1;
-            }
-        }
-
-        /* Toast Notification */
-        .toast {
-            position: fixed;
-            bottom: 32px;
-            left: 50%;
-            transform: translateX(-50%) translateY(100px);
-            background: var(--success-gradient);
-            color: white;
-            padding: 16px 28px;
-            border-radius: 12px;
-            font-size: 14px;
-            font-weight: 600;
-            box-shadow: 0 8px 32px rgba(17, 153, 142, 0.4);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            opacity: 0;
-            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-            z-index: 1000;
-        }
-
-        .toast.show {
-            transform: translateX(-50%) translateY(0);
-            opacity: 1;
-        }
-
-        .toast svg {
-            width: 20px;
-            height: 20px;
-        }
-
-        /* Shimmer effect on button */
-        .btn-primary .shimmer {
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(
-                90deg,
-                transparent,
-                rgba(255, 255, 255, 0.15),
-                transparent
-            );
-            transition: left 0.5s ease;
-        }
-
-        .btn-primary:hover .shimmer {
-            left: 100%;
-        }
-
-        @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            10%, 30%, 50%, 70%, 90% { transform: translateX(-4px); }
-            20%, 40%, 60%, 80% { transform: translateX(4px); }
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Download Hub · VSCode Extensions + GitHub Mirror</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: rgba(255,255,255,0.06);
+      --panel-border: rgba(255,255,255,0.12);
+      --panel-strong: rgba(255,255,255,0.09);
+      --text: #eef2ff;
+      --muted: rgba(238,242,255,0.66);
+      --subtle: rgba(238,242,255,0.45);
+      --primary: #7c3aed;
+      --primary-2: #2563eb;
+      --success: #10b981;
+      --danger: #ef4444;
+      --chip: rgba(255,255,255,0.08);
+      --chip-border: rgba(255,255,255,0.1);
+      --shadow: 0 12px 40px rgba(0,0,0,0.35);
+      --radius: 20px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(37,99,235,0.22), transparent 35%),
+        radial-gradient(circle at top right, rgba(124,58,237,0.22), transparent 35%),
+        radial-gradient(circle at bottom, rgba(16,185,129,0.12), transparent 35%),
+        var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .container {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 32px 0 48px;
+    }
+    .hero {
+      text-align: center;
+      padding: 28px 0 18px;
+    }
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(32px, 4vw, 52px);
+      letter-spacing: -0.04em;
+    }
+    .hero p {
+      margin: 16px auto 0;
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 20px;
+      margin-top: 28px;
+      align-items: start;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      overflow: hidden;
+    }
+    .panel-head {
+      padding: 20px 22px 8px;
+    }
+    .panel-title {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 700;
+    }
+    .panel-desc {
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .panel-body {
+      padding: 20px 22px 22px;
+    }
+    .field {
+      margin-bottom: 14px;
+    }
+    .label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    input {
+      width: 100%;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.24);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 15px 16px;
+      font: inherit;
+      outline: none;
+      transition: 0.18s ease;
+    }
+    input:focus {
+      border-color: rgba(99,102,241,0.75);
+      box-shadow: 0 0 0 4px rgba(99,102,241,0.18);
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button, .btn {
+      border: 0;
+      border-radius: 14px;
+      padding: 14px 18px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      transition: 0.18s ease;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .btn-primary {
+      color: white;
+      background: linear-gradient(135deg, var(--primary), var(--primary-2));
+      box-shadow: 0 10px 24px rgba(79,70,229,0.32);
+    }
+    .btn-primary:hover { transform: translateY(-1px); }
+    .btn-secondary {
+      color: var(--text);
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+    .btn-secondary:hover { background: rgba(255,255,255,0.11); }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .chip {
+      border: 1px solid var(--chip-border);
+      background: var(--chip);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 10px 14px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .status {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      font-size: 14px;
+      display: none;
+      line-height: 1.5;
+    }
+    .status.show { display: block; }
+    .status.info { background: rgba(59,130,246,0.14); color: #bfdbfe; border: 1px solid rgba(59,130,246,0.28); }
+    .status.success { background: rgba(16,185,129,0.14); color: #bbf7d0; border: 1px solid rgba(16,185,129,0.28); }
+    .status.error { background: rgba(239,68,68,0.14); color: #fecaca; border: 1px solid rgba(239,68,68,0.28); }
+    .section-title {
+      margin: 18px 0 12px;
+      font-size: 14px;
+      color: var(--muted);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .results {
+      display: grid;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .ext-card {
+      background: var(--panel-strong);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      padding: 16px;
+    }
+    .ext-top {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+    }
+    .ext-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.08);
+      overflow: hidden;
+      flex-shrink: 0;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .ext-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .ext-name {
+      margin: 0;
+      font-size: 17px;
+    }
+    .ext-meta {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .ext-desc {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .ext-actions {
+      margin-top: 14px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      word-break: break-all;
+    }
+    .features {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 20px;
+    }
+    .feature {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      padding: 16px;
+    }
+    .feature h4 {
+      margin: 0 0 8px;
+      font-size: 14px;
+    }
+    .feature p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    footer {
+      margin-top: 28px;
+      text-align: center;
+      color: var(--subtle);
+      font-size: 13px;
+    }
+    a { color: #c4b5fd; }
+    @media (max-width: 920px) {
+      .grid { grid-template-columns: 1fr; }
+      .features { grid-template-columns: 1fr; }
+    }
+  </style>
 </head>
 <body>
-    <div class="bg-gradient"></div>
-    <div class="floating-orbs">
-        <div class="orb orb-1"></div>
-        <div class="orb orb-2"></div>
-        <div class="orb orb-3"></div>
-    </div>
+  <div class="container">
+    <section class="hero">
+      <h1>Download Hub</h1>
+      <p>
+        One Cloudflare Worker for two jobs: accelerate GitHub release downloads and make VSCode extension search and VSIX downloads easier through Open VSX.
+      </p>
+    </section>
 
-    <div class="main-container">
-        <header class="header">
-            <div class="logo-container">
-                <div class="logo-icon">
-                    <svg viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
-                    </svg>
-                </div>
-                <span class="logo-text">GitHub Mirror</span>
-            </div>
-            <p class="tagline">Transform GitHub release URLs into blazing-fast, globally cached download links</p>
-        </header>
-
-        <div class="glass-card">
-            <div class="input-group">
-                <label class="input-label">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
-                    </svg>
-                    GitHub Release URL
-                </label>
-                <div class="input-wrapper">
-                    <svg class="input-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
-                    </svg>
-                    <input 
-                        type="text" 
-                        class="url-input" 
-                        id="urlInput"
-                        placeholder="https://github.com/user/repo/releases/download/v1.0/file.zip"
-                        autocomplete="off"
-                        spellcheck="false"
-                    >
-                </div>
-            </div>
-
-            <button class="btn-primary" id="generateBtn" onclick="generateMirrorLink()">
-                <span class="shimmer"></span>
-                <span class="btn-content">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                    </svg>
-                    Generate Mirror Link
-                </span>
-            </button>
-
-            <div class="result-section" id="resultSection">
-                <div class="result-label">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                    </svg>
-                    Your High-Speed Mirror Link
-                </div>
-                <div class="result-box">
-                    <a href="#" class="result-link" id="mirrorLink" target="_blank"></a>
-                    <button class="btn-copy" id="copyBtn" onclick="copyToClipboard()">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" id="copyIcon">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
-                        </svg>
-                        <span id="copyText">Copy</span>
-                    </button>
-                </div>
-            </div>
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">VSCode Extensions</h2>
+          <p class="panel-desc">Search Open VSX, inspect extension metadata, then download via this worker for a faster and more consistent path.</p>
         </div>
+        <div class="panel-body">
+          <div class="field">
+            <label class="label" for="extQuery">Search by name, publisher, or extension id</label>
+            <input id="extQuery" placeholder="python, prettier, dbaeumer.vscode-eslint">
+          </div>
+          <div class="row">
+            <button class="btn-primary" id="searchBtn">Search extensions</button>
+          </div>
 
-        <div class="features">
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                    </svg>
-                </div>
-                <div class="feature-content">
-                    <div class="feature-title">Edge Cached</div>
-                    <div class="feature-desc">Global CDN caching for maximum speed</div>
-                </div>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                    </svg>
-                </div>
-                <div class="feature-content">
-                    <div class="feature-title">Resumable</div>
-                    <div class="feature-desc">Supports download managers</div>
-                </div>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-                    </svg>
-                </div>
-                <div class="feature-content">
-                    <div class="feature-title">Reliable</div>
-                    <div class="feature-desc">Powered by Cloudflare Workers</div>
-                </div>
-            </div>
+          <div class="section-title">Hot extensions</div>
+          <div class="chips" id="hotChips"></div>
+
+          <div class="status info" id="extStatus"></div>
+          <div class="results" id="extResults"></div>
         </div>
+      </section>
 
-        <footer class="footer">
-            <p>Made by <a href="https://github.com/creasydude" target="_blank">@creasydude</a> • Powered by <a href="https://workers.cloudflare.com" target="_blank">Cloudflare Workers</a></p>
-        </footer>
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">GitHub Release Mirror</h2>
+          <p class="panel-desc">Turn a GitHub release asset URL into a worker URL with edge caching, resumable downloads, and stable copy/paste flow.</p>
+        </div>
+        <div class="panel-body">
+          <div class="field">
+            <label class="label" for="ghUrl">GitHub release asset URL</label>
+            <input id="ghUrl" placeholder="https://github.com/user/repo/releases/download/v1.0/file.zip">
+          </div>
+          <div class="row">
+            <button class="btn-primary" id="ghBtn">Generate mirror link</button>
+            <button class="btn-secondary" id="ghCopyBtn" style="display:none;">Copy</button>
+          </div>
+          <div class="status info" id="ghStatus"></div>
+          <div class="results" id="ghResults"></div>
+        </div>
+      </section>
     </div>
 
-    <div class="toast" id="toast">
-        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-        </svg>
-        <span>Link copied to clipboard!</span>
-    </div>
+    <section class="features">
+      <div class="feature">
+        <h4>Shared download core</h4>
+        <p>GitHub releases and VSIX downloads go through the same streaming proxy layer with source whitelisting.</p>
+      </div>
+      <div class="feature">
+        <h4>Cache-aware responses</h4>
+        <p>Short cache for metadata, long cache for binary downloads, plus explicit response headers for easier debugging.</p>
+      </div>
+      <div class="feature">
+        <h4>Cloudflare-friendly MVP</h4>
+        <p>No heavy backend. Just one worker entry that you can later split, restyle, or expand with KV/R2 if needed.</p>
+      </div>
+    </section>
 
-    <script>
-        const urlInput = document.getElementById('urlInput');
-        const resultSection = document.getElementById('resultSection');
-        const mirrorLink = document.getElementById('mirrorLink');
-        const copyBtn = document.getElementById('copyBtn');
-        const copyText = document.getElementById('copyText');
-        const copyIcon = document.getElementById('copyIcon');
-        const toast = document.getElementById('toast');
+    <footer>
+      Built from a GitHub mirror base and extended into a dual-purpose developer download hub.
+    </footer>
+  </div>
 
-        // Enter key support
-        urlInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                generateMirrorLink();
-            }
+  <script>
+    const HOT_EXTENSIONS = ${JSON.stringify(HOT_EXTENSIONS)};
+    const extQuery = document.getElementById('extQuery');
+    const searchBtn = document.getElementById('searchBtn');
+    const extStatus = document.getElementById('extStatus');
+    const extResults = document.getElementById('extResults');
+    const hotChips = document.getElementById('hotChips');
+
+    const ghUrl = document.getElementById('ghUrl');
+    const ghBtn = document.getElementById('ghBtn');
+    const ghCopyBtn = document.getElementById('ghCopyBtn');
+    const ghStatus = document.getElementById('ghStatus');
+    const ghResults = document.getElementById('ghResults');
+
+    let currentMirrorLink = '';
+
+    function setStatus(el, type, message) {
+      el.className = 'status show ' + type;
+      el.textContent = message;
+    }
+
+    function clearStatus(el) {
+      el.className = 'status';
+      el.textContent = '';
+    }
+
+    function escapeHtml(str = '') {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderHotExtensions() {
+      hotChips.innerHTML = HOT_EXTENSIONS.map(id => '<button class="chip" data-id="' + escapeHtml(id) + '">' + escapeHtml(id) + '</button>').join('');
+      hotChips.querySelectorAll('.chip').forEach(btn => {
+        btn.addEventListener('click', () => {
+          extQuery.value = btn.dataset.id;
+          searchExtensions();
         });
+      });
+    }
 
-        function generateMirrorLink() {
-            const input = urlInput.value.trim();
-            
-            if (!input) {
-                shakeInput();
-                return;
-            }
+    function extCard(ext) {
+      const icon = ext.iconUrl ? '<img src="' + escapeHtml(ext.iconUrl) + '" alt="icon">' : '';
+      const downloadBtn = ext.downloadUrl
+        ? '<a class="btn btn-primary" href="' + escapeHtml(ext.downloadUrl) + '" target="_blank" rel="noopener noreferrer">Download latest</a>'
+        : '';
+      const detailBtn = ext.namespace && ext.name
+        ? '<a class="btn btn-secondary" href="/api/extensions/' + encodeURIComponent(ext.namespace) + '/' + encodeURIComponent(ext.name) + '" target="_blank" rel="noopener noreferrer">View JSON</a>'
+        : '';
+      const sourceBtn = ext.sourceUrl
+        ? '<a class="btn btn-secondary" href="' + escapeHtml(ext.sourceUrl) + '" target="_blank" rel="noopener noreferrer">Open source</a>'
+        : '';
 
-            try {
-                const urlObj = new URL(input);
-                
-                if (!urlObj.hostname.includes('github.com')) {
-                    showError('Please enter a valid GitHub URL');
-                    return;
-                }
+      return '<article class="ext-card">'
+        + '<div class="ext-top">'
+        + '<div class="ext-icon">' + icon + '</div>'
+        + '<div>'
+        + '<h3 class="ext-name">' + escapeHtml(ext.displayName || (ext.namespace + '.' + ext.name)) + '</h3>'
+        + '<div class="ext-meta mono">' + escapeHtml(ext.namespace + '.' + ext.name) + ' · v' + escapeHtml(ext.version || 'unknown') + '</div>'
+        + (ext.publisher ? '<div class="ext-meta">Publisher: ' + escapeHtml(ext.publisher) + '</div>' : '')
+        + '</div></div>'
+        + '<div class="ext-desc">' + escapeHtml(ext.description || 'No description available.') + '</div>'
+        + '<div class="ext-actions">' + downloadBtn + detailBtn + sourceBtn + '</div>'
+        + '</article>';
+    }
 
-                const workerHost = window.location.host;
-                const newUrl = input.replace(urlObj.hostname, workerHost);
+    async function searchExtensions() {
+      const q = extQuery.value.trim();
+      extResults.innerHTML = '';
+      if (!q) {
+        setStatus(extStatus, 'error', 'Enter an extension keyword or extension id first.');
+        return;
+      }
 
-                mirrorLink.href = newUrl;
-                mirrorLink.textContent = newUrl;
-                
-                resultSection.classList.remove('active');
-                void resultSection.offsetWidth; // Trigger reflow
-                resultSection.classList.add('active');
-                
-                // Reset copy button
-                resetCopyButton();
-                
-            } catch (e) {
-                showError('Invalid URL format');
-            }
+      setStatus(extStatus, 'info', 'Searching Open VSX...');
+      try {
+        const res = await fetch('/api/extensions/search?q=' + encodeURIComponent(q));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Search failed');
+
+        if (!data.results || !data.results.length) {
+          setStatus(extStatus, 'error', 'No matching extensions found.');
+          return;
         }
 
-        function copyToClipboard() {
-            const link = mirrorLink.textContent;
-            
-            navigator.clipboard.writeText(link).then(function() {
-                copyBtn.classList.add('copied');
-                copyText.textContent = 'Copied!';
-                copyIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>';
-                
-                showToast();
-                
-                setTimeout(resetCopyButton, 2500);
-            }).catch(function(err) {
-                console.error('Failed to copy:', err);
-                showError('Failed to copy to clipboard');
-            });
+        setStatus(extStatus, 'success', 'Found ' + data.results.length + ' extension(s).');
+        extResults.innerHTML = data.results.map(extCard).join('');
+      } catch (err) {
+        setStatus(extStatus, 'error', err.message || 'Search failed.');
+      }
+    }
+
+    function generateMirrorLink() {
+      clearStatus(ghStatus);
+      ghResults.innerHTML = '';
+      ghCopyBtn.style.display = 'none';
+      const input = ghUrl.value.trim();
+      if (!input) {
+        setStatus(ghStatus, 'error', 'Enter a GitHub release asset URL first.');
+        return;
+      }
+
+      try {
+        const url = new URL(input);
+        if (url.hostname !== 'github.com') {
+          throw new Error('Only github.com release URLs are supported here.');
+        }
+        if (!/\/releases\/download\//.test(url.pathname)) {
+          throw new Error('This does not look like a GitHub release asset URL.');
         }
 
-        function resetCopyButton() {
-            copyBtn.classList.remove('copied');
-            copyText.textContent = 'Copy';
-            copyIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>';
-        }
+        currentMirrorLink = window.location.origin + url.pathname;
+        ghResults.innerHTML = '<article class="ext-card">'
+          + '<div class="ext-desc"><strong>Mirror URL</strong></div>'
+          + '<div class="ext-meta mono" style="margin-top:10px;">' + escapeHtml(currentMirrorLink) + '</div>'
+          + '<div class="ext-actions" style="margin-top:14px;">'
+          + '<a class="btn btn-primary" href="' + escapeHtml(currentMirrorLink) + '" target="_blank" rel="noopener noreferrer">Open mirror link</a>'
+          + '</div></article>';
+        ghCopyBtn.style.display = 'inline-flex';
+        setStatus(ghStatus, 'success', 'Mirror link generated.');
+      } catch (err) {
+        setStatus(ghStatus, 'error', err.message || 'Invalid URL.');
+      }
+    }
 
-        function shakeInput() {
-            urlInput.style.animation = 'none';
-            urlInput.offsetHeight; // Trigger reflow
-            urlInput.style.animation = 'shake 0.5s ease';
-            urlInput.style.borderColor = 'rgba(245, 87, 108, 0.5)';
-            setTimeout(function() {
-                urlInput.style.borderColor = '';
-            }, 1500);
-        }
+    async function copyMirrorLink() {
+      if (!currentMirrorLink) return;
+      try {
+        await navigator.clipboard.writeText(currentMirrorLink);
+        setStatus(ghStatus, 'success', 'Mirror link copied to clipboard.');
+      } catch {
+        setStatus(ghStatus, 'error', 'Copy failed. Please copy manually.');
+      }
+    }
 
-        function showError(message) {
-            const originalPlaceholder = urlInput.placeholder;
-            urlInput.value = '';
-            urlInput.placeholder = message;
-            urlInput.style.borderColor = 'rgba(245, 87, 108, 0.5)';
-            
-            setTimeout(function() {
-                urlInput.placeholder = originalPlaceholder;
-                urlInput.style.borderColor = '';
-            }, 2500);
-        }
+    searchBtn.addEventListener('click', searchExtensions);
+    extQuery.addEventListener('keypress', (e) => { if (e.key === 'Enter') searchExtensions(); });
+    ghBtn.addEventListener('click', generateMirrorLink);
+    ghUrl.addEventListener('keypress', (e) => { if (e.key === 'Enter') generateMirrorLink(); });
+    ghCopyBtn.addEventListener('click', copyMirrorLink);
 
-        function showToast() {
-            toast.classList.add('show');
-            setTimeout(function() {
-                toast.classList.remove('show');
-            }, 2500);
-        }
-    </script>
+    renderHotExtensions();
+  </script>
 </body>
 </html>
 `;
 
 export default {
-    async fetch(request, env, ctx) {
-        const url = new URL(request.url);
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
 
-        // 1. SERVE UI
-        if (url.pathname === '/' || url.pathname === '') {
-            return new Response(HTML_PAGE, {
-                headers: { 'Content-Type': 'text/html;charset=UTF-8' }
-            });
-        }
-
-        // 2. CHECK CACHE (Speed Boost)
-        const cache = caches.default;
-        let response = await cache.match(request);
-
-        if (response) {
-            // HIT: Return cached file
-            let newHeaders = new Headers(response.headers);
-            newHeaders.set('X-Worker-Cache', 'HIT'); 
-            return new Response(response.body, {
-                status: response.status,
-                statusText: response.statusText,
-                headers: newHeaders
-            });
-        }
-
-        // 3. FETCH FROM ORIGIN (GitHub)
-        const ghUrl = new URL(GITHUB_URL + url.pathname);
-        
-        try {
-            const upstreamReq = new Request(ghUrl, {
-                method: request.method,
-                headers: {
-                    'User-Agent': 'Cloudflare-Worker-Mirror',
-                    'Range': request.headers.get('Range') || '' // Support Resume
-                }
-            });
-
-            const upstreamRes = await fetch(upstreamReq);
-
-            // If upstream failed or partial content (206), pass through without caching logic
-            if (!upstreamRes.ok && upstreamRes.status !== 304) {
-                return upstreamRes;
-            }
-
-            // 4. PREPARE RESPONSE
-            let resHeaders = new Headers(upstreamRes.headers);
-            resHeaders.set('Access-Control-Allow-Origin', '*'); // Allow downloads from anywhere
-            resHeaders.set('X-Worker-Cache', 'MISS');
-
-            // Force browser and Cloudflare to cache this for a long time
-            if (upstreamRes.status === 200) {
-                resHeaders.set('Cache-Control', 'public, max-age=' + CACHE_TTL);
-            }
-
-            response = new Response(upstreamRes.body, {
-                status: upstreamRes.status,
-                statusText: upstreamRes.statusText,
-                headers: resHeaders
-            });
-
-            // 5. SAVE TO CACHE (if full file)
-            if (upstreamRes.status === 200) {
-                ctx.waitUntil(cache.put(request, response.clone()));
-            }
-
-            return response;
-
-        } catch (e) {
-            return new Response("Error: " + e.message, { status: 500 });
-        }
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders()
+      });
     }
+
+    if (url.pathname === '/' || url.pathname === '') {
+      return htmlResponse(HTML_PAGE);
+    }
+
+    if (url.pathname === '/health') {
+      return jsonResponse({ ok: true, service: 'download-hub-worker' });
+    }
+
+    if (url.pathname === '/api/extensions/search') {
+      return handleSearch(request, ctx);
+    }
+
+    if (url.pathname.startsWith('/api/extensions/')) {
+      return handleExtensionRoutes(request, ctx);
+    }
+
+    if (url.pathname.startsWith('/api/github/resolve')) {
+      return handleGitHubResolve(request);
+    }
+
+    if (isGitHubReleasePath(url.pathname)) {
+      return proxyBinaryRequest(request, ctx, {
+        upstreamUrl: GITHUB_URL + url.pathname,
+        cacheTtl: DOWNLOAD_CACHE_TTL,
+        source: 'github'
+      });
+    }
+
+    return jsonResponse({ error: 'Not found' }, 404);
+  }
 };
+
+async function handleSearch(request, ctx) {
+  const url = new URL(request.url);
+  const q = (url.searchParams.get('q') || '').trim();
+  if (!q) {
+    return jsonResponse({ error: 'Missing query parameter: q' }, 400);
+  }
+
+  const cacheKey = new Request(request.url, { method: 'GET' });
+  const cached = await caches.default.match(cacheKey);
+  if (cached) {
+    return withCacheHeader(cached, 'HIT');
+  }
+
+  const upstreamUrl = new URL(OPEN_VSX_API + '/-/search');
+  upstreamUrl.searchParams.set('query', q);
+  upstreamUrl.searchParams.set('size', '12');
+
+  const upstreamRes = await fetch(upstreamUrl.toString(), {
+    headers: { 'User-Agent': 'download-hub-worker' }
+  });
+
+  if (!upstreamRes.ok) {
+    return jsonResponse({ error: 'Open VSX search failed' }, 502);
+  }
+
+  const payload = await upstreamRes.json();
+  const results = Array.isArray(payload.extensions) ? payload.extensions.map(mapExtensionSearchResult) : [];
+  const response = jsonResponse({ query: q, results }, 200, {
+    'Cache-Control': `public, max-age=${SEARCH_CACHE_TTL}`,
+    'X-Worker-Cache': 'MISS'
+  });
+
+  ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
+  return response;
+}
+
+async function handleExtensionRoutes(request, ctx) {
+  const url = new URL(request.url);
+  const parts = url.pathname.split('/').filter(Boolean);
+  // /api/extensions/:namespace/:name or /api/extensions/:namespace/:name/:version/download
+  if (parts.length < 4) {
+    return jsonResponse({ error: 'Invalid extension route' }, 400);
+  }
+
+  const namespace = decodeURIComponent(parts[2] || '');
+  const name = decodeURIComponent(parts[3] || '');
+  if (!namespace || !name) {
+    return jsonResponse({ error: 'Missing namespace or name' }, 400);
+  }
+
+  if (parts.length === 4) {
+    return handleExtensionDetail(request, ctx, namespace, name);
+  }
+
+  if (parts.length === 6 && parts[5] === 'download') {
+    const version = decodeURIComponent(parts[4] || '');
+    return handleExtensionDownload(request, ctx, namespace, name, version);
+  }
+
+  return jsonResponse({ error: 'Unsupported extension route' }, 404);
+}
+
+async function handleExtensionDetail(request, ctx, namespace, name) {
+  const cacheKey = new Request(request.url, { method: 'GET' });
+  const cached = await caches.default.match(cacheKey);
+  if (cached) {
+    return withCacheHeader(cached, 'HIT');
+  }
+
+  const upstreamUrl = `${OPEN_VSX_API}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`;
+  const upstreamRes = await fetch(upstreamUrl, {
+    headers: { 'User-Agent': 'download-hub-worker' }
+  });
+
+  if (!upstreamRes.ok) {
+    return jsonResponse({ error: 'Extension not found in Open VSX' }, upstreamRes.status === 404 ? 404 : 502);
+  }
+
+  const payload = await upstreamRes.json();
+  const versions = Array.isArray(payload.allVersions)
+    ? payload.allVersions.map(v => ({
+        version: v.version,
+        downloadUrl: buildExtensionDownloadUrl(request, namespace, name, v.version),
+        sourceUrl: v.files?.download || null
+      }))
+    : [];
+
+  const response = jsonResponse({
+    namespace,
+    name,
+    extensionId: `${namespace}.${name}`,
+    displayName: payload.displayName || `${namespace}.${name}`,
+    description: payload.description || '',
+    version: payload.version || null,
+    iconUrl: payload.files?.icon || null,
+    sourceUrl: payload.repository || payload.homepage || null,
+    openvsxUrl: payload.reviewUrl || payload.namespaceUrl || `https://open-vsx.org/extension/${namespace}/${name}`,
+    downloadUrl: buildExtensionDownloadUrl(request, namespace, name, payload.version),
+    versions
+  }, 200, {
+    'Cache-Control': `public, max-age=${DETAIL_CACHE_TTL}`,
+    'X-Worker-Cache': 'MISS'
+  });
+
+  ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
+  return response;
+}
+
+async function handleExtensionDownload(request, ctx, namespace, name, version) {
+  if (!version) {
+    return jsonResponse({ error: 'Missing version' }, 400);
+  }
+
+  const upstreamUrl = `${OPEN_VSX_API}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/${encodeURIComponent(version)}/file/${encodeURIComponent(namespace)}.${encodeURIComponent(name)}-${encodeURIComponent(version)}.vsix`;
+
+  return proxyBinaryRequest(request, ctx, {
+    upstreamUrl,
+    cacheTtl: DOWNLOAD_CACHE_TTL,
+    source: 'openvsx'
+  });
+}
+
+async function handleGitHubResolve(request) {
+  const url = new URL(request.url);
+  const input = (url.searchParams.get('url') || '').trim();
+  if (!input) {
+    return jsonResponse({ error: 'Missing url query parameter' }, 400);
+  }
+
+  try {
+    const parsed = new URL(input);
+    if (parsed.hostname !== 'github.com' || !isGitHubReleasePath(parsed.pathname)) {
+      return jsonResponse({ error: 'Only GitHub release asset URLs are supported' }, 400);
+    }
+
+    return jsonResponse({
+      originalUrl: input,
+      mirrorUrl: url.origin + parsed.pathname
+    });
+  } catch {
+    return jsonResponse({ error: 'Invalid URL' }, 400);
+  }
+}
+
+async function proxyBinaryRequest(request, ctx, { upstreamUrl, cacheTtl, source }) {
+  const allowed = isAllowedUpstream(upstreamUrl);
+  if (!allowed) {
+    return jsonResponse({ error: 'Upstream is not allowed' }, 400);
+  }
+
+  const cache = caches.default;
+  const cacheable = request.method === 'GET' && !request.headers.get('Range');
+  if (cacheable) {
+    const cached = await cache.match(request);
+    if (cached) {
+      return withSourceAndCacheHeaders(cached, source, 'HIT');
+    }
+  }
+
+  try {
+    const upstreamRes = await fetch(new Request(upstreamUrl, {
+      method: request.method,
+      headers: buildUpstreamHeaders(request)
+    }));
+
+    if (!upstreamRes.ok && upstreamRes.status !== 206 && upstreamRes.status !== 304) {
+      return passthroughError(upstreamRes, source);
+    }
+
+    const headers = new Headers(upstreamRes.headers);
+    applyCors(headers);
+    headers.set('X-Proxy-Source', source);
+    headers.set('X-Worker-Cache', 'MISS');
+    if (upstreamRes.status === 200) {
+      headers.set('Cache-Control', `public, max-age=${cacheTtl}`);
+    }
+
+    const response = new Response(upstreamRes.body, {
+      status: upstreamRes.status,
+      statusText: upstreamRes.statusText,
+      headers
+    });
+
+    if (cacheable && upstreamRes.status === 200) {
+      ctx.waitUntil(cache.put(request, response.clone()));
+    }
+
+    return response;
+  } catch (error) {
+    return jsonResponse({ error: error.message || 'Proxy request failed', source }, 500);
+  }
+}
+
+function mapExtensionSearchResult(item) {
+  const namespace = item.namespace || item.namespaceName || item.namespaceId || '';
+  const name = item.name || '';
+  const version = item.version || item.latestVersion || null;
+  return {
+    namespace,
+    name,
+    publisher: item.namespaceDisplayName || namespace,
+    displayName: item.displayName || `${namespace}.${name}`,
+    description: item.description || '',
+    version,
+    iconUrl: item.files?.icon || item.iconUrl || null,
+    sourceUrl: item.repository || item.homepage || null,
+    downloadUrl: version ? `/api/extensions/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/${encodeURIComponent(version)}/download` : null
+  };
+}
+
+function buildExtensionDownloadUrl(request, namespace, name, version) {
+  if (!version) return null;
+  const origin = new URL(request.url).origin;
+  return `${origin}/api/extensions/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/${encodeURIComponent(version)}/download`;
+}
+
+function isAllowedUpstream(input) {
+  try {
+    const url = new URL(input);
+    const allowedHosts = new Set([
+      'github.com',
+      'open-vsx.org',
+      'objects.githubusercontent.com',
+      'release-assets.githubusercontent.com'
+    ]);
+    return allowedHosts.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isGitHubReleasePath(pathname) {
+  return /^\/[^/]+\/[^/]+\/releases\/download\/[^/]+\/.+/.test(pathname);
+}
+
+function buildUpstreamHeaders(request) {
+  const headers = new Headers();
+  headers.set('User-Agent', 'download-hub-worker');
+  const range = request.headers.get('Range');
+  if (range) headers.set('Range', range);
+  const accept = request.headers.get('Accept');
+  if (accept) headers.set('Accept', accept);
+  return headers;
+}
+
+function passthroughError(upstreamRes, source) {
+  const headers = new Headers(upstreamRes.headers);
+  applyCors(headers);
+  headers.set('X-Proxy-Source', source);
+  headers.set('X-Worker-Cache', 'MISS');
+  return new Response(upstreamRes.body, {
+    status: upstreamRes.status,
+    statusText: upstreamRes.statusText,
+    headers
+  });
+}
+
+function jsonResponse(data, status = 200, extraHeaders = {}) {
+  const headers = new Headers({
+    'Content-Type': 'application/json;charset=UTF-8',
+    ...corsHeaders(),
+    ...extraHeaders
+  });
+  return new Response(JSON.stringify(data, null, 2), { status, headers });
+}
+
+function htmlResponse(html) {
+  return new Response(html, {
+    headers: {
+      'Content-Type': 'text/html;charset=UTF-8',
+      ...corsHeaders()
+    }
+  });
+}
+
+function corsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,HEAD,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Range'
+  };
+}
+
+function applyCors(headers) {
+  const cors = corsHeaders();
+  for (const [key, value] of Object.entries(cors)) {
+    headers.set(key, value);
+  }
+}
+
+function withCacheHeader(response, value) {
+  const headers = new Headers(response.headers);
+  headers.set('X-Worker-Cache', value);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
+function withSourceAndCacheHeaders(response, source, cacheValue) {
+  const headers = new Headers(response.headers);
+  headers.set('X-Proxy-Source', source);
+  headers.set('X-Worker-Cache', cacheValue);
+  applyCors(headers);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
