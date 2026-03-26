@@ -1,20 +1,15 @@
 /**
  * Cloudflare Worker: VSCode Extensions + GitHub Release Mirror
  *
- * Combined features:
- * - GitHub release acceleration with edge caching and range support
- * - VS Code extension search/detail via Open VSX
- * - VSIX download acceleration via the same proxy core
- *
- * Notes:
- * - Only whitelisted upstreams are proxied
- * - Download streaming is preserved for large files
- * - Search/detail endpoints use shorter cache TTLs than binary downloads
+ * Product goals:
+ * - A real front-end landing experience instead of a bare utility page
+ * - GitHub release acceleration with cache and resumable download support
+ * - VS Code extension search, detail, and VSIX download via Open VSX
+ * - A single deployable Worker file for simple Cloudflare deployment
  */
 
 const GITHUB_URL = 'https://github.com';
 const OPEN_VSX_API = 'https://open-vsx.org/api';
-const OPEN_VSX_HOST = 'open-vsx.org';
 const DOWNLOAD_CACHE_TTL = 31536000; // 1 year
 const SEARCH_CACHE_TTL = 900; // 15 min
 const DETAIL_CACHE_TTL = 1800; // 30 min
@@ -30,522 +25,35 @@ const HOT_EXTENSIONS = [
   'eamodio.gitlens'
 ];
 
-const HTML_PAGE = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Download Hub · VSCode Extensions + GitHub Mirror</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #0b1020;
-      --panel: rgba(255,255,255,0.06);
-      --panel-border: rgba(255,255,255,0.12);
-      --panel-strong: rgba(255,255,255,0.09);
-      --text: #eef2ff;
-      --muted: rgba(238,242,255,0.66);
-      --subtle: rgba(238,242,255,0.45);
-      --primary: #7c3aed;
-      --primary-2: #2563eb;
-      --success: #10b981;
-      --danger: #ef4444;
-      --chip: rgba(255,255,255,0.08);
-      --chip-border: rgba(255,255,255,0.1);
-      --shadow: 0 12px 40px rgba(0,0,0,0.35);
-      --radius: 20px;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: Inter, system-ui, sans-serif;
-      background:
-        radial-gradient(circle at top left, rgba(37,99,235,0.22), transparent 35%),
-        radial-gradient(circle at top right, rgba(124,58,237,0.22), transparent 35%),
-        radial-gradient(circle at bottom, rgba(16,185,129,0.12), transparent 35%),
-        var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-    }
-    .container {
-      width: min(1180px, calc(100vw - 32px));
-      margin: 0 auto;
-      padding: 32px 0 48px;
-    }
-    .hero {
-      text-align: center;
-      padding: 28px 0 18px;
-    }
-    .hero h1 {
-      margin: 0;
-      font-size: clamp(32px, 4vw, 52px);
-      letter-spacing: -0.04em;
-    }
-    .hero p {
-      margin: 16px auto 0;
-      max-width: 760px;
-      color: var(--muted);
-      font-size: 16px;
-      line-height: 1.7;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
-      gap: 20px;
-      margin-top: 28px;
-      align-items: start;
-    }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--panel-border);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(18px);
-      -webkit-backdrop-filter: blur(18px);
-      overflow: hidden;
-    }
-    .panel-head {
-      padding: 20px 22px 8px;
-    }
-    .panel-title {
-      margin: 0;
-      font-size: 20px;
-      font-weight: 700;
-    }
-    .panel-desc {
-      margin: 8px 0 0;
-      color: var(--muted);
-      line-height: 1.6;
-      font-size: 14px;
-    }
-    .panel-body {
-      padding: 20px 22px 22px;
-    }
-    .field {
-      margin-bottom: 14px;
-    }
-    .label {
-      display: block;
-      margin-bottom: 8px;
-      font-size: 13px;
-      color: var(--muted);
-      font-weight: 600;
-    }
-    input {
-      width: 100%;
-      border: 1px solid rgba(255,255,255,0.12);
-      background: rgba(0,0,0,0.24);
-      color: var(--text);
-      border-radius: 14px;
-      padding: 15px 16px;
-      font: inherit;
-      outline: none;
-      transition: 0.18s ease;
-    }
-    input:focus {
-      border-color: rgba(99,102,241,0.75);
-      box-shadow: 0 0 0 4px rgba(99,102,241,0.18);
-    }
-    .row {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    button, .btn {
-      border: 0;
-      border-radius: 14px;
-      padding: 14px 18px;
-      font: inherit;
-      font-weight: 700;
-      cursor: pointer;
-      transition: 0.18s ease;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-    }
-    .btn-primary {
-      color: white;
-      background: linear-gradient(135deg, var(--primary), var(--primary-2));
-      box-shadow: 0 10px 24px rgba(79,70,229,0.32);
-    }
-    .btn-primary:hover { transform: translateY(-1px); }
-    .btn-secondary {
-      color: var(--text);
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.12);
-    }
-    .btn-secondary:hover { background: rgba(255,255,255,0.11); }
-    .chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 12px;
-    }
-    .chip {
-      border: 1px solid var(--chip-border);
-      background: var(--chip);
-      color: var(--text);
-      border-radius: 999px;
-      padding: 10px 14px;
-      font-size: 13px;
-      cursor: pointer;
-    }
-    .status {
-      margin-top: 14px;
-      padding: 12px 14px;
-      border-radius: 14px;
-      font-size: 14px;
-      display: none;
-      line-height: 1.5;
-    }
-    .status.show { display: block; }
-    .status.info { background: rgba(59,130,246,0.14); color: #bfdbfe; border: 1px solid rgba(59,130,246,0.28); }
-    .status.success { background: rgba(16,185,129,0.14); color: #bbf7d0; border: 1px solid rgba(16,185,129,0.28); }
-    .status.error { background: rgba(239,68,68,0.14); color: #fecaca; border: 1px solid rgba(239,68,68,0.28); }
-    .section-title {
-      margin: 18px 0 12px;
-      font-size: 14px;
-      color: var(--muted);
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .results {
-      display: grid;
-      gap: 12px;
-      margin-top: 10px;
-    }
-    .ext-card {
-      background: var(--panel-strong);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 16px;
-      padding: 16px;
-    }
-    .ext-top {
-      display: flex;
-      gap: 14px;
-      align-items: flex-start;
-    }
-    .ext-icon {
-      width: 52px;
-      height: 52px;
-      border-radius: 14px;
-      background: rgba(255,255,255,0.08);
-      overflow: hidden;
-      flex-shrink: 0;
-      border: 1px solid rgba(255,255,255,0.08);
-    }
-    .ext-icon img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }
-    .ext-name {
-      margin: 0;
-      font-size: 17px;
-    }
-    .ext-meta {
-      margin-top: 6px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .ext-desc {
-      margin-top: 10px;
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.6;
-    }
-    .ext-actions {
-      margin-top: 14px;
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    .mono {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      word-break: break-all;
-    }
-    .features {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 12px;
-      margin-top: 20px;
-    }
-    .feature {
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 16px;
-      padding: 16px;
-    }
-    .feature h4 {
-      margin: 0 0 8px;
-      font-size: 14px;
-    }
-    .feature p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.6;
-    }
-    footer {
-      margin-top: 28px;
-      text-align: center;
-      color: var(--subtle);
-      font-size: 13px;
-    }
-    a { color: #c4b5fd; }
-    @media (max-width: 920px) {
-      .grid { grid-template-columns: 1fr; }
-      .features { grid-template-columns: 1fr; }
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <section class="hero">
-      <h1>Download Hub</h1>
-      <p>
-        One Cloudflare Worker for two jobs: accelerate GitHub release downloads and make VSCode extension search and VSIX downloads easier through Open VSX.
-      </p>
-    </section>
-
-    <div class="grid">
-      <section class="panel">
-        <div class="panel-head">
-          <h2 class="panel-title">VSCode Extensions</h2>
-          <p class="panel-desc">Search Open VSX, inspect extension metadata, then download via this worker for a faster and more consistent path.</p>
-        </div>
-        <div class="panel-body">
-          <div class="field">
-            <label class="label" for="extQuery">Search by name, publisher, or extension id</label>
-            <input id="extQuery" placeholder="python, prettier, dbaeumer.vscode-eslint">
-          </div>
-          <div class="row">
-            <button class="btn-primary" id="searchBtn">Search extensions</button>
-          </div>
-
-          <div class="section-title">Hot extensions</div>
-          <div class="chips" id="hotChips"></div>
-
-          <div class="status info" id="extStatus"></div>
-          <div class="results" id="extResults"></div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <h2 class="panel-title">GitHub Release Mirror</h2>
-          <p class="panel-desc">Turn a GitHub release asset URL into a worker URL with edge caching, resumable downloads, and stable copy/paste flow.</p>
-        </div>
-        <div class="panel-body">
-          <div class="field">
-            <label class="label" for="ghUrl">GitHub release asset URL</label>
-            <input id="ghUrl" placeholder="https://github.com/user/repo/releases/download/v1.0/file.zip">
-          </div>
-          <div class="row">
-            <button class="btn-primary" id="ghBtn">Generate mirror link</button>
-            <button class="btn-secondary" id="ghCopyBtn" style="display:none;">Copy</button>
-          </div>
-          <div class="status info" id="ghStatus"></div>
-          <div class="results" id="ghResults"></div>
-        </div>
-      </section>
-    </div>
-
-    <section class="features">
-      <div class="feature">
-        <h4>Shared download core</h4>
-        <p>GitHub releases and VSIX downloads go through the same streaming proxy layer with source whitelisting.</p>
-      </div>
-      <div class="feature">
-        <h4>Cache-aware responses</h4>
-        <p>Short cache for metadata, long cache for binary downloads, plus explicit response headers for easier debugging.</p>
-      </div>
-      <div class="feature">
-        <h4>Cloudflare-friendly MVP</h4>
-        <p>No heavy backend. Just one worker entry that you can later split, restyle, or expand with KV/R2 if needed.</p>
-      </div>
-    </section>
-
-    <footer>
-      Built from a GitHub mirror base and extended into a dual-purpose developer download hub.
-    </footer>
-  </div>
-
-  <script>
-    const HOT_EXTENSIONS = ${JSON.stringify(HOT_EXTENSIONS)};
-    const extQuery = document.getElementById('extQuery');
-    const searchBtn = document.getElementById('searchBtn');
-    const extStatus = document.getElementById('extStatus');
-    const extResults = document.getElementById('extResults');
-    const hotChips = document.getElementById('hotChips');
-
-    const ghUrl = document.getElementById('ghUrl');
-    const ghBtn = document.getElementById('ghBtn');
-    const ghCopyBtn = document.getElementById('ghCopyBtn');
-    const ghStatus = document.getElementById('ghStatus');
-    const ghResults = document.getElementById('ghResults');
-
-    let currentMirrorLink = '';
-
-    function setStatus(el, type, message) {
-      el.className = 'status show ' + type;
-      el.textContent = message;
-    }
-
-    function clearStatus(el) {
-      el.className = 'status';
-      el.textContent = '';
-    }
-
-    function escapeHtml(str = '') {
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
-
-    function renderHotExtensions() {
-      hotChips.innerHTML = HOT_EXTENSIONS.map(id => '<button class="chip" data-id="' + escapeHtml(id) + '">' + escapeHtml(id) + '</button>').join('');
-      hotChips.querySelectorAll('.chip').forEach(btn => {
-        btn.addEventListener('click', () => {
-          extQuery.value = btn.dataset.id;
-          searchExtensions();
-        });
-      });
-    }
-
-    function extCard(ext) {
-      const icon = ext.iconUrl ? '<img src="' + escapeHtml(ext.iconUrl) + '" alt="icon">' : '';
-      const downloadBtn = ext.downloadUrl
-        ? '<a class="btn btn-primary" href="' + escapeHtml(ext.downloadUrl) + '" target="_blank" rel="noopener noreferrer">Download latest</a>'
-        : '';
-      const detailBtn = ext.namespace && ext.name
-        ? '<a class="btn btn-secondary" href="/api/extensions/' + encodeURIComponent(ext.namespace) + '/' + encodeURIComponent(ext.name) + '" target="_blank" rel="noopener noreferrer">View JSON</a>'
-        : '';
-      const sourceBtn = ext.sourceUrl
-        ? '<a class="btn btn-secondary" href="' + escapeHtml(ext.sourceUrl) + '" target="_blank" rel="noopener noreferrer">Open source</a>'
-        : '';
-
-      return '<article class="ext-card">'
-        + '<div class="ext-top">'
-        + '<div class="ext-icon">' + icon + '</div>'
-        + '<div>'
-        + '<h3 class="ext-name">' + escapeHtml(ext.displayName || (ext.namespace + '.' + ext.name)) + '</h3>'
-        + '<div class="ext-meta mono">' + escapeHtml(ext.namespace + '.' + ext.name) + ' · v' + escapeHtml(ext.version || 'unknown') + '</div>'
-        + (ext.publisher ? '<div class="ext-meta">Publisher: ' + escapeHtml(ext.publisher) + '</div>' : '')
-        + '</div></div>'
-        + '<div class="ext-desc">' + escapeHtml(ext.description || 'No description available.') + '</div>'
-        + '<div class="ext-actions">' + downloadBtn + detailBtn + sourceBtn + '</div>'
-        + '</article>';
-    }
-
-    async function searchExtensions() {
-      const q = extQuery.value.trim();
-      extResults.innerHTML = '';
-      if (!q) {
-        setStatus(extStatus, 'error', 'Enter an extension keyword or extension id first.');
-        return;
-      }
-
-      setStatus(extStatus, 'info', 'Searching Open VSX...');
-      try {
-        const res = await fetch('/api/extensions/search?q=' + encodeURIComponent(q));
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Search failed');
-
-        if (!data.results || !data.results.length) {
-          setStatus(extStatus, 'error', 'No matching extensions found.');
-          return;
-        }
-
-        setStatus(extStatus, 'success', 'Found ' + data.results.length + ' extension(s).');
-        extResults.innerHTML = data.results.map(extCard).join('');
-      } catch (err) {
-        setStatus(extStatus, 'error', err.message || 'Search failed.');
-      }
-    }
-
-    function generateMirrorLink() {
-      clearStatus(ghStatus);
-      ghResults.innerHTML = '';
-      ghCopyBtn.style.display = 'none';
-      const input = ghUrl.value.trim();
-      if (!input) {
-        setStatus(ghStatus, 'error', 'Enter a GitHub release asset URL first.');
-        return;
-      }
-
-      try {
-        const url = new URL(input);
-        if (url.hostname !== 'github.com') {
-          throw new Error('Only github.com release URLs are supported here.');
-        }
-        if (!/\/releases\/download\//.test(url.pathname)) {
-          throw new Error('This does not look like a GitHub release asset URL.');
-        }
-
-        currentMirrorLink = window.location.origin + url.pathname;
-        ghResults.innerHTML = '<article class="ext-card">'
-          + '<div class="ext-desc"><strong>Mirror URL</strong></div>'
-          + '<div class="ext-meta mono" style="margin-top:10px;">' + escapeHtml(currentMirrorLink) + '</div>'
-          + '<div class="ext-actions" style="margin-top:14px;">'
-          + '<a class="btn btn-primary" href="' + escapeHtml(currentMirrorLink) + '" target="_blank" rel="noopener noreferrer">Open mirror link</a>'
-          + '</div></article>';
-        ghCopyBtn.style.display = 'inline-flex';
-        setStatus(ghStatus, 'success', 'Mirror link generated.');
-      } catch (err) {
-        setStatus(ghStatus, 'error', err.message || 'Invalid URL.');
-      }
-    }
-
-    async function copyMirrorLink() {
-      if (!currentMirrorLink) return;
-      try {
-        await navigator.clipboard.writeText(currentMirrorLink);
-        setStatus(ghStatus, 'success', 'Mirror link copied to clipboard.');
-      } catch {
-        setStatus(ghStatus, 'error', 'Copy failed. Please copy manually.');
-      }
-    }
-
-    searchBtn.addEventListener('click', searchExtensions);
-    extQuery.addEventListener('keypress', (e) => { if (e.key === 'Enter') searchExtensions(); });
-    ghBtn.addEventListener('click', generateMirrorLink);
-    ghUrl.addEventListener('keypress', (e) => { if (e.key === 'Enter') generateMirrorLink(); });
-    ghCopyBtn.addEventListener('click', copyMirrorLink);
-
-    renderHotExtensions();
-  </script>
-</body>
-</html>
-`;
-
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        status: 204,
-        headers: corsHeaders()
-      });
+      return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
     if (url.pathname === '/' || url.pathname === '') {
-      return htmlResponse(HTML_PAGE);
+      return htmlResponse(renderHomePage(url.origin));
+    }
+
+    if (url.pathname === '/extensions' || url.pathname === '/extensions/') {
+      return htmlResponse(renderExtensionsPage(url.origin));
+    }
+
+    const extensionPageMatch = url.pathname.match(/^\/extensions\/([^/]+)\/([^/]+)$/);
+    if (extensionPageMatch) {
+      const namespace = decodeURIComponent(extensionPageMatch[1]);
+      const name = decodeURIComponent(extensionPageMatch[2]);
+      return htmlResponse(renderExtensionDetailPage(url.origin, namespace, name));
+    }
+
+    if (url.pathname === '/github' || url.pathname === '/github/') {
+      return htmlResponse(renderGitHubPage(url.origin));
     }
 
     if (url.pathname === '/health') {
-      return jsonResponse({ ok: true, service: 'download-hub-worker' });
+      return jsonResponse({ ok: true, service: 'vscode-gh-mirror' });
     }
 
     if (url.pathname === '/api/extensions/search') {
@@ -568,7 +76,7 @@ export default {
       });
     }
 
-    return jsonResponse({ error: 'Not found' }, 404);
+    return htmlResponse(renderNotFoundPage(url.origin), 404);
   }
 };
 
@@ -587,10 +95,10 @@ async function handleSearch(request, ctx) {
 
   const upstreamUrl = new URL(OPEN_VSX_API + '/-/search');
   upstreamUrl.searchParams.set('query', q);
-  upstreamUrl.searchParams.set('size', '12');
+  upstreamUrl.searchParams.set('size', '18');
 
   const upstreamRes = await fetch(upstreamUrl.toString(), {
-    headers: { 'User-Agent': 'download-hub-worker' }
+    headers: { 'User-Agent': 'vscode-gh-mirror-worker' }
   });
 
   if (!upstreamRes.ok) {
@@ -609,9 +117,7 @@ async function handleSearch(request, ctx) {
 }
 
 async function handleExtensionRoutes(request, ctx) {
-  const url = new URL(request.url);
-  const parts = url.pathname.split('/').filter(Boolean);
-  // /api/extensions/:namespace/:name or /api/extensions/:namespace/:name/:version/download
+  const parts = new URL(request.url).pathname.split('/').filter(Boolean);
   if (parts.length < 4) {
     return jsonResponse({ error: 'Invalid extension route' }, 400);
   }
@@ -643,7 +149,7 @@ async function handleExtensionDetail(request, ctx, namespace, name) {
 
   const upstreamUrl = `${OPEN_VSX_API}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`;
   const upstreamRes = await fetch(upstreamUrl, {
-    headers: { 'User-Agent': 'download-hub-worker' }
+    headers: { 'User-Agent': 'vscode-gh-mirror-worker' }
   });
 
   if (!upstreamRes.ok) {
@@ -670,7 +176,13 @@ async function handleExtensionDetail(request, ctx, namespace, name) {
     sourceUrl: payload.repository || payload.homepage || null,
     openvsxUrl: payload.reviewUrl || payload.namespaceUrl || `https://open-vsx.org/extension/${namespace}/${name}`,
     downloadUrl: buildExtensionDownloadUrl(request, namespace, name, payload.version),
-    versions
+    versions,
+    stats: {
+      averageRating: payload.averageRating || null,
+      reviewCount: payload.reviewCount || null,
+      downloadCount: payload.downloadCount || null,
+      timestamp: payload.timestamp || null
+    }
   }, 200, {
     'Cache-Control': `public, max-age=${DETAIL_CACHE_TTL}`,
     'X-Worker-Cache': 'MISS'
@@ -686,7 +198,6 @@ async function handleExtensionDownload(request, ctx, namespace, name, version) {
   }
 
   const upstreamUrl = `${OPEN_VSX_API}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/${encodeURIComponent(version)}/file/${encodeURIComponent(namespace)}.${encodeURIComponent(name)}-${encodeURIComponent(version)}.vsix`;
-
   return proxyBinaryRequest(request, ctx, {
     upstreamUrl,
     cacheTtl: DOWNLOAD_CACHE_TTL,
@@ -709,7 +220,8 @@ async function handleGitHubResolve(request) {
 
     return jsonResponse({
       originalUrl: input,
-      mirrorUrl: url.origin + parsed.pathname
+      mirrorUrl: url.origin + parsed.pathname,
+      path: parsed.pathname
     });
   } catch {
     return jsonResponse({ error: 'Invalid URL' }, 400);
@@ -717,13 +229,13 @@ async function handleGitHubResolve(request) {
 }
 
 async function proxyBinaryRequest(request, ctx, { upstreamUrl, cacheTtl, source }) {
-  const allowed = isAllowedUpstream(upstreamUrl);
-  if (!allowed) {
+  if (!isAllowedUpstream(upstreamUrl)) {
     return jsonResponse({ error: 'Upstream is not allowed' }, 400);
   }
 
   const cache = caches.default;
   const cacheable = request.method === 'GET' && !request.headers.get('Range');
+
   if (cacheable) {
     const cached = await cache.match(request);
     if (cached) {
@@ -778,6 +290,7 @@ function mapExtensionSearchResult(item) {
     version,
     iconUrl: item.files?.icon || item.iconUrl || null,
     sourceUrl: item.repository || item.homepage || null,
+    detailPage: `/extensions/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
     downloadUrl: version ? `/api/extensions/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/${encodeURIComponent(version)}/download` : null
   };
 }
@@ -791,13 +304,12 @@ function buildExtensionDownloadUrl(request, namespace, name, version) {
 function isAllowedUpstream(input) {
   try {
     const url = new URL(input);
-    const allowedHosts = new Set([
+    return new Set([
       'github.com',
       'open-vsx.org',
       'objects.githubusercontent.com',
       'release-assets.githubusercontent.com'
-    ]);
-    return allowedHosts.has(url.hostname);
+    ]).has(url.hostname);
   } catch {
     return false;
   }
@@ -809,10 +321,10 @@ function isGitHubReleasePath(pathname) {
 
 function buildUpstreamHeaders(request) {
   const headers = new Headers();
-  headers.set('User-Agent', 'download-hub-worker');
+  headers.set('User-Agent', 'vscode-gh-mirror-worker');
   const range = request.headers.get('Range');
-  if (range) headers.set('Range', range);
   const accept = request.headers.get('Accept');
+  if (range) headers.set('Range', range);
   if (accept) headers.set('Accept', accept);
   return headers;
 }
@@ -829,24 +341,6 @@ function passthroughError(upstreamRes, source) {
   });
 }
 
-function jsonResponse(data, status = 200, extraHeaders = {}) {
-  const headers = new Headers({
-    'Content-Type': 'application/json;charset=UTF-8',
-    ...corsHeaders(),
-    ...extraHeaders
-  });
-  return new Response(JSON.stringify(data, null, 2), { status, headers });
-}
-
-function htmlResponse(html) {
-  return new Response(html, {
-    headers: {
-      'Content-Type': 'text/html;charset=UTF-8',
-      ...corsHeaders()
-    }
-  });
-}
-
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
@@ -856,10 +350,30 @@ function corsHeaders() {
 }
 
 function applyCors(headers) {
-  const cors = corsHeaders();
-  for (const [key, value] of Object.entries(cors)) {
+  for (const [key, value] of Object.entries(corsHeaders())) {
     headers.set(key, value);
   }
+}
+
+function jsonResponse(data, status = 200, extraHeaders = {}) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      'Content-Type': 'application/json;charset=UTF-8',
+      ...corsHeaders(),
+      ...extraHeaders
+    }
+  });
+}
+
+function htmlResponse(html, status = 200) {
+  return new Response(html, {
+    status,
+    headers: {
+      'Content-Type': 'text/html;charset=UTF-8',
+      ...corsHeaders()
+    }
+  });
 }
 
 function withCacheHeader(response, value) {
@@ -882,4 +396,802 @@ function withSourceAndCacheHeaders(response, source, cacheValue) {
     statusText: response.statusText,
     headers
   });
+}
+
+function renderHomePage(origin) {
+  return baseHtml({
+    title: 'VSCode 插件 + GitHub 加速站',
+    active: 'home',
+    body: `
+      <section class="hero hero-home">
+        <div class="hero-copy">
+          <span class="badge">Cloudflare Worker</span>
+          <h1>插件下载 + GitHub 加速，放到一个站里</h1>
+          <p>搜索 VSCode 插件、查看版本、下载 VSIX；同时把 GitHub Release 链接转换成你自己的镜像下载地址。现在是一个能直接上手用的前端版本，不只是接口页。</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="/extensions">搜索插件</a>
+            <a class="btn btn-secondary" href="/github">GitHub 加速</a>
+          </div>
+        </div>
+        <div class="hero-side card glass">
+          <div class="mini-block">
+            <div class="mini-title">快速入口</div>
+            <a class="quick-link" href="/extensions">/extensions</a>
+            <a class="quick-link" href="/github">/github</a>
+            <a class="quick-link" href="/health">/health</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="feature-grid">
+        <article class="card glass feature-card">
+          <h3>VSCode 插件搜索</h3>
+          <p>接 Open VSX 搜索接口，支持关键字搜索、热门插件、详情查看和版本下载。</p>
+          <a class="text-link" href="/extensions">去插件页 →</a>
+        </article>
+        <article class="card glass feature-card">
+          <h3>GitHub Release 加速</h3>
+          <p>把标准 release 附件链接转换成你的 Worker 链接，支持边缘缓存和断点续传。</p>
+          <a class="text-link" href="/github">去加速页 →</a>
+        </article>
+        <article class="card glass feature-card">
+          <h3>统一下载代理层</h3>
+          <p>GitHub 和 VSIX 下载共用一套代理逻辑，限制白名单源站，避免做成任意开放代理。</p>
+          <a class="text-link" href="${origin}/health">看健康状态 →</a>
+        </article>
+      </section>
+
+      <section class="card glass section-block">
+        <div class="section-head">
+          <h2>热门插件</h2>
+          <a class="text-link" href="/extensions">查看更多 →</a>
+        </div>
+        <div class="hot-grid">
+          ${HOT_EXTENSIONS.map(id => `<a class="hot-chip" href="/extensions?q=${encodeURIComponent(id)}">${escapeHtml(id)}</a>`).join('')}
+        </div>
+      </section>
+    `,
+    scripts: ''
+  });
+}
+
+function renderExtensionsPage(origin) {
+  return baseHtml({
+    title: '插件搜索',
+    active: 'extensions',
+    body: `
+      <section class="page-head">
+        <div>
+          <span class="badge">Open VSX</span>
+          <h1>搜索 VSCode 插件</h1>
+          <p>支持按关键字或扩展 ID 搜索，结果里直接点详情或下载最新 VSIX。</p>
+        </div>
+      </section>
+
+      <section class="card glass section-block">
+        <div class="search-bar-row">
+          <input id="ext-search-input" class="search-input" placeholder="例如：python / prettier / ms-python.python" />
+          <button id="ext-search-btn" class="btn btn-primary">搜索</button>
+        </div>
+        <div class="hot-grid compact" id="ext-hot-list">
+          ${HOT_EXTENSIONS.map(id => `<button class="hot-chip hot-button" data-query="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join('')}
+        </div>
+        <div id="ext-search-status" class="status-box hidden"></div>
+      </section>
+
+      <section class="results-layout">
+        <div class="results-main">
+          <div id="ext-search-results" class="results-list"></div>
+        </div>
+        <aside class="results-side">
+          <div class="card glass side-panel">
+            <h3>使用提示</h3>
+            <ul>
+              <li>可以直接搜扩展 ID，例如 <code>ms-python.python</code></li>
+              <li>点击“查看详情”会进入详情页</li>
+              <li>点击“下载最新 VSIX”会走本站代理</li>
+            </ul>
+          </div>
+        </aside>
+      </section>
+    `,
+    scripts: `
+      <script>
+        const input = document.getElementById('ext-search-input');
+        const btn = document.getElementById('ext-search-btn');
+        const results = document.getElementById('ext-search-results');
+        const statusBox = document.getElementById('ext-search-status');
+        const hotButtons = Array.from(document.querySelectorAll('.hot-button'));
+
+        function setStatus(message, type = 'info') {
+          statusBox.className = 'status-box ' + type;
+          statusBox.textContent = message;
+        }
+
+        function clearStatus() {
+          statusBox.className = 'status-box hidden';
+          statusBox.textContent = '';
+        }
+
+        function queryFromUrl() {
+          const q = new URLSearchParams(window.location.search).get('q') || '';
+          if (q) input.value = q;
+          return q;
+        }
+
+        function card(item) {
+          const icon = item.iconUrl ? '<img src="' + escapeHtml(item.iconUrl) + '" alt="icon">' : '<div class="icon-fallback">VS</div>';
+          return 
+            '<article class="result-card card glass">'
+            + '<div class="result-top">'
+            + '<div class="result-icon">' + icon + '</div>'
+            + '<div class="result-info">'
+            + '<h3>' + escapeHtml(item.displayName || (item.namespace + '.' + item.name)) + '</h3>'
+            + '<div class="meta-line"><code>' + escapeHtml(item.namespace + '.' + item.name) + '</code><span>v' + escapeHtml(item.version || 'unknown') + '</span></div>'
+            + '<p>' + escapeHtml(item.description || '暂无简介') + '</p>'
+            + '</div></div>'
+            + '<div class="result-actions">'
+            + '<a class="btn btn-secondary" href="' + item.detailPage + '">查看详情</a>'
+            + (item.downloadUrl ? '<a class="btn btn-primary" href="' + item.downloadUrl + '" target="_blank">下载最新 VSIX</a>' : '')
+            + '</div>'
+            + '</article>';
+        }
+
+        async function search(q, pushState = true) {
+          if (!q) {
+            setStatus('先输入关键字或扩展 ID。', 'error');
+            results.innerHTML = '';
+            return;
+          }
+          setStatus('正在搜索插件...', 'info');
+          results.innerHTML = '';
+          if (pushState) {
+            const next = new URL(window.location.href);
+            next.searchParams.set('q', q);
+            history.replaceState(null, '', next.toString());
+          }
+          try {
+            const res = await fetch('/api/extensions/search?q=' + encodeURIComponent(q));
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '搜索失败');
+            if (!data.results || !data.results.length) {
+              setStatus('没有找到匹配结果。', 'error');
+              return;
+            }
+            clearStatus();
+            results.innerHTML = data.results.map(card).join('');
+          } catch (err) {
+            setStatus(err.message || '搜索失败', 'error');
+          }
+        }
+
+        btn.addEventListener('click', () => search(input.value.trim()));
+        input.addEventListener('keypress', (e) => { if (e.key === 'Enter') search(input.value.trim()); });
+        hotButtons.forEach(btn => btn.addEventListener('click', () => {
+          input.value = btn.dataset.query;
+          search(btn.dataset.query);
+        }));
+
+        const initial = queryFromUrl();
+        if (initial) search(initial, false);
+      </script>
+    `
+  });
+}
+
+function renderExtensionDetailPage(origin, namespace, name) {
+  const encodedNs = encodeURIComponent(namespace);
+  const encodedName = encodeURIComponent(name);
+  return baseHtml({
+    title: `${namespace}.${name}`,
+    active: 'extensions',
+    body: `
+      <section class="page-head">
+        <div>
+          <span class="badge">Extension Detail</span>
+          <h1 id="detail-title">${escapeHtml(namespace)}.${escapeHtml(name)}</h1>
+          <p id="detail-subtitle">正在加载插件信息...</p>
+        </div>
+        <div class="page-head-actions">
+          <a class="btn btn-secondary" href="/extensions">返回搜索</a>
+        </div>
+      </section>
+
+      <section class="detail-layout">
+        <div class="detail-main">
+          <div id="detail-status" class="status-box info">正在拉取详情...</div>
+          <article id="detail-summary" class="card glass detail-summary hidden"></article>
+          <article class="card glass section-block">
+            <div class="section-head">
+              <h2>版本列表</h2>
+              <a id="detail-openvsx-link" class="text-link" href="#" target="_blank" rel="noopener">Open VSX 页面</a>
+            </div>
+            <div id="detail-version-list" class="version-list"></div>
+          </article>
+        </div>
+        <aside class="detail-side">
+          <div class="card glass side-panel">
+            <h3>接口地址</h3>
+            <p><a class="text-link wrap" href="/api/extensions/${encodedNs}/${encodedName}" target="_blank">/api/extensions/${escapeHtml(encodedNs)}/${escapeHtml(encodedName)}</a></p>
+          </div>
+        </aside>
+      </section>
+    `,
+    scripts: `
+      <script>
+        const detailStatus = document.getElementById('detail-status');
+        const detailTitle = document.getElementById('detail-title');
+        const detailSubtitle = document.getElementById('detail-subtitle');
+        const detailSummary = document.getElementById('detail-summary');
+        const versionList = document.getElementById('detail-version-list');
+        const openvsxLink = document.getElementById('detail-openvsx-link');
+
+        function setDetailStatus(message, type = 'info') {
+          detailStatus.className = 'status-box ' + type;
+          detailStatus.textContent = message;
+        }
+
+        function formatStat(label, value) {
+          if (value === null || value === undefined || value === '') return '';
+          return '<div class="stat-item"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(String(value)) + '</strong></div>';
+        }
+
+        async function loadDetail() {
+          try {
+            const res = await fetch('/api/extensions/${encodedNs}/${encodedName}');
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '详情加载失败');
+
+            detailTitle.textContent = data.displayName || data.extensionId;
+            detailSubtitle.textContent = data.extensionId + (data.version ? ' · 最新版本 ' + data.version : '');
+            openvsxLink.href = data.openvsxUrl || '#';
+
+            detailSummary.className = 'card glass detail-summary';
+            detailSummary.innerHTML = 
+              '<div class="detail-hero">'
+              + '<div class="detail-icon">' + (data.iconUrl ? '<img src="' + escapeHtml(data.iconUrl) + '" alt="icon">' : '<div class="icon-fallback">VS</div>') + '</div>'
+              + '<div class="detail-copy">'
+              + '<h2>' + escapeHtml(data.displayName || data.extensionId) + '</h2>'
+              + '<div class="meta-line"><code>' + escapeHtml(data.extensionId) + '</code></div>'
+              + '<p>' + escapeHtml(data.description || '暂无简介') + '</p>'
+              + '<div class="result-actions">'
+              + (data.downloadUrl ? '<a class="btn btn-primary" href="' + escapeHtml(data.downloadUrl) + '" target="_blank">下载最新 VSIX</a>' : '')
+              + (data.sourceUrl ? '<a class="btn btn-secondary" href="' + escapeHtml(data.sourceUrl) + '" target="_blank">项目主页</a>' : '')
+              + '</div>'
+              + '</div></div>'
+              + '<div class="stats-grid">'
+              + formatStat('最新版本', data.version)
+              + formatStat('下载量', data.stats && data.stats.downloadCount)
+              + formatStat('评分', data.stats && data.stats.averageRating)
+              + formatStat('评论数', data.stats && data.stats.reviewCount)
+              + '</div>';
+
+            if (data.versions && data.versions.length) {
+              versionList.innerHTML = data.versions.slice(0, 25).map(v => 
+                '<div class="version-item">'
+                + '<div><strong>' + escapeHtml(v.version) + '</strong></div>'
+                + '<div class="result-actions">'
+                + '<a class="btn btn-primary" href="' + escapeHtml(v.downloadUrl) + '" target="_blank">下载</a>'
+                + (v.sourceUrl ? '<a class="btn btn-secondary" href="' + escapeHtml(v.sourceUrl) + '" target="_blank">源地址</a>' : '')
+                + '</div></div>'
+              ).join('');
+            } else {
+              versionList.innerHTML = '<div class="empty-box">没有拿到版本列表。</div>';
+            }
+
+            detailStatus.className = 'status-box hidden';
+            detailStatus.textContent = '';
+          } catch (err) {
+            setDetailStatus(err.message || '详情加载失败', 'error');
+          }
+        }
+
+        loadDetail();
+      </script>
+    `
+  });
+}
+
+function renderGitHubPage(origin) {
+  return baseHtml({
+    title: 'GitHub 加速',
+    active: 'github',
+    body: `
+      <section class="page-head">
+        <div>
+          <span class="badge">GitHub Release Mirror</span>
+          <h1>生成 GitHub 下载加速链接</h1>
+          <p>把标准 GitHub release 附件地址贴进来，转换成你这个站自己的镜像下载链接。</p>
+        </div>
+      </section>
+
+      <section class="card glass section-block">
+        <div class="search-bar-row">
+          <input id="gh-url-input" class="search-input" placeholder="https://github.com/user/repo/releases/download/v1.0/file.zip" />
+          <button id="gh-generate-btn" class="btn btn-primary">生成链接</button>
+        </div>
+        <div id="gh-status" class="status-box hidden"></div>
+        <div id="gh-result" class="result-card card glass hidden"></div>
+      </section>
+
+      <section class="tips-grid">
+        <article class="card glass side-panel">
+          <h3>支持</h3>
+          <ul>
+            <li>标准 GitHub Release 附件地址</li>
+            <li>缓存加速</li>
+            <li>断点续传</li>
+          </ul>
+        </article>
+        <article class="card glass side-panel">
+          <h3>不支持</h3>
+          <ul>
+            <li>普通 GitHub 页面</li>
+            <li>任意外链代理</li>
+            <li>仓库源码页直链</li>
+          </ul>
+        </article>
+      </section>
+    `,
+    scripts: `
+      <script>
+        const input = document.getElementById('gh-url-input');
+        const btn = document.getElementById('gh-generate-btn');
+        const statusBox = document.getElementById('gh-status');
+        const resultBox = document.getElementById('gh-result');
+
+        function setStatus(message, type = 'info') {
+          statusBox.className = 'status-box ' + type;
+          statusBox.textContent = message;
+        }
+
+        function clearStatus() {
+          statusBox.className = 'status-box hidden';
+          statusBox.textContent = '';
+        }
+
+        async function generate() {
+          const value = input.value.trim();
+          if (!value) {
+            setStatus('先输入一个 GitHub release 附件链接。', 'error');
+            resultBox.className = 'result-card card glass hidden';
+            resultBox.innerHTML = '';
+            return;
+          }
+          setStatus('正在生成镜像链接...', 'info');
+          try {
+            const res = await fetch('/api/github/resolve?url=' + encodeURIComponent(value));
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '生成失败');
+            clearStatus();
+            resultBox.className = 'result-card card glass';
+            resultBox.innerHTML = 
+              '<h3>镜像链接</h3>'
+              + '<p class="wrap mono">' + escapeHtml(data.mirrorUrl) + '</p>'
+              + '<div class="result-actions">'
+              + '<a class="btn btn-primary" href="' + escapeHtml(data.mirrorUrl) + '" target="_blank">打开下载</a>'
+              + '<button id="copy-gh-btn" class="btn btn-secondary">复制链接</button>'
+              + '</div>';
+            document.getElementById('copy-gh-btn').addEventListener('click', async () => {
+              try {
+                await navigator.clipboard.writeText(data.mirrorUrl);
+                setStatus('已复制到剪贴板。', 'success');
+              } catch {
+                setStatus('复制失败，请手动复制。', 'error');
+              }
+            });
+          } catch (err) {
+            setStatus(err.message || '生成失败', 'error');
+          }
+        }
+
+        btn.addEventListener('click', generate);
+        input.addEventListener('keypress', (e) => { if (e.key === 'Enter') generate(); });
+      </script>
+    `
+  });
+}
+
+function renderNotFoundPage(origin) {
+  return baseHtml({
+    title: '页面不存在',
+    active: '',
+    body: `
+      <section class="empty-state card glass">
+        <h1>页面不存在</h1>
+        <p>你访问的路径没有对应页面。可以从首页重新进入。</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="/">回首页</a>
+          <a class="btn btn-secondary" href="/extensions">搜插件</a>
+        </div>
+      </section>
+    `,
+    scripts: ''
+  });
+}
+
+function baseHtml({ title, active, body, scripts }) {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(title)} · VSCode 插件 + GitHub 加速站</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #07111f;
+      --bg-soft: #0d1a2b;
+      --panel: rgba(255,255,255,0.06);
+      --panel-2: rgba(255,255,255,0.04);
+      --border: rgba(255,255,255,0.12);
+      --text: #eef4ff;
+      --muted: rgba(238,244,255,0.72);
+      --subtle: rgba(238,244,255,0.48);
+      --primary: #7c3aed;
+      --primary-2: #2563eb;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --shadow: 0 20px 50px rgba(0,0,0,0.35);
+      --radius: 22px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, sans-serif;
+      background:
+        radial-gradient(circle at 0% 0%, rgba(37,99,235,0.22), transparent 28%),
+        radial-gradient(circle at 100% 0%, rgba(124,58,237,0.24), transparent 30%),
+        radial-gradient(circle at 50% 100%, rgba(16,185,129,0.10), transparent 30%),
+        linear-gradient(180deg, #07111f 0%, #091827 100%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    a { color: inherit; text-decoration: none; }
+    .wrap { word-break: break-all; }
+    .mono, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .site-shell {
+      width: min(1240px, calc(100vw - 28px));
+      margin: 0 auto;
+      padding: 24px 0 60px;
+    }
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      margin-bottom: 24px;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 14px 18px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(7,17,31,0.68);
+      box-shadow: var(--shadow);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-2));
+      display: grid;
+      place-items: center;
+      box-shadow: 0 10px 24px rgba(99,102,241,0.28);
+      font-size: 16px;
+    }
+    .brand-sub {
+      display: block;
+      color: var(--subtle);
+      font-size: 12px;
+      font-weight: 600;
+      margin-top: 3px;
+    }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .nav-link {
+      padding: 10px 14px;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 14px;
+      border: 1px solid transparent;
+    }
+    .nav-link.active {
+      color: var(--text);
+      background: rgba(255,255,255,0.07);
+      border-color: rgba(255,255,255,0.09);
+    }
+    .badge {
+      display: inline-flex;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #ddd6fe;
+      border: 1px solid rgba(196,181,253,0.24);
+      background: rgba(124,58,237,0.14);
+    }
+    .hero, .page-head, .detail-layout, .results-layout, .feature-grid, .tips-grid {
+      display: grid;
+      gap: 18px;
+    }
+    .hero-home {
+      grid-template-columns: 1.2fr 0.8fr;
+      align-items: stretch;
+      margin-bottom: 24px;
+    }
+    .hero-copy {
+      padding: 18px 0;
+    }
+    .hero-copy h1, .page-head h1, .empty-state h1 {
+      margin: 12px 0 0;
+      font-size: clamp(32px, 5vw, 54px);
+      line-height: 1.05;
+      letter-spacing: -0.045em;
+    }
+    .hero-copy p, .page-head p, .empty-state p {
+      margin: 16px 0 0;
+      color: var(--muted);
+      line-height: 1.75;
+      font-size: 16px;
+      max-width: 760px;
+    }
+    .hero-actions, .page-head-actions, .result-actions, .search-bar-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .hero-actions { margin-top: 22px; }
+    .card {
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+    }
+    .glass {
+      background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.04));
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+    }
+    .section-block, .side-panel, .empty-state, .detail-summary { padding: 22px; }
+    .mini-block { padding: 22px; }
+    .mini-title, .section-head h2, .side-panel h3, .result-card h3 { margin: 0 0 12px; }
+    .quick-link {
+      display: block;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.05);
+      margin-top: 10px;
+      color: #ddd6fe;
+      font-family: ui-monospace, monospace;
+    }
+    .feature-grid {
+      grid-template-columns: repeat(3, 1fr);
+      margin-bottom: 24px;
+    }
+    .feature-card { padding: 22px; }
+    .feature-card h3 { margin: 0 0 10px; }
+    .feature-card p, .side-panel li, .side-panel p { color: var(--muted); line-height: 1.7; }
+    .text-link { color: #c4b5fd; font-weight: 700; }
+    .hot-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .hot-grid.compact { margin-top: 16px; }
+    .hot-chip {
+      padding: 12px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: var(--text);
+      font-size: 14px;
+    }
+    .hot-button { cursor: pointer; }
+    .page-head { margin-bottom: 18px; }
+    .search-input, input {
+      flex: 1;
+      min-width: 240px;
+      width: 100%;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.22);
+      color: var(--text);
+      padding: 15px 16px;
+      font: inherit;
+      outline: none;
+    }
+    .search-input:focus, input:focus {
+      border-color: rgba(99,102,241,0.8);
+      box-shadow: 0 0 0 4px rgba(99,102,241,0.16);
+    }
+    .btn {
+      border: 0;
+      border-radius: 16px;
+      padding: 14px 18px;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+      transition: .18s ease;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-primary {
+      color: white;
+      background: linear-gradient(135deg, var(--primary), var(--primary-2));
+      box-shadow: 0 10px 24px rgba(99,102,241,0.24);
+    }
+    .btn-secondary {
+      color: var(--text);
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .status-box {
+      margin-top: 16px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .status-box.hidden { display: none; }
+    .status-box.info { background: rgba(59,130,246,0.14); border: 1px solid rgba(59,130,246,0.28); color: #bfdbfe; }
+    .status-box.success { background: rgba(16,185,129,0.14); border: 1px solid rgba(16,185,129,0.28); color: #bbf7d0; }
+    .status-box.error { background: rgba(239,68,68,0.14); border: 1px solid rgba(239,68,68,0.28); color: #fecaca; }
+    .results-layout, .detail-layout {
+      grid-template-columns: 1.2fr 0.8fr;
+      align-items: start;
+    }
+    .results-list, .version-list { display: grid; gap: 14px; }
+    .result-card { padding: 18px; }
+    .result-top, .detail-hero {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+    .result-icon, .detail-icon {
+      width: 64px;
+      height: 64px;
+      border-radius: 18px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.08);
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+    .result-icon img, .detail-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .icon-fallback {
+      font-weight: 800;
+      color: #ddd6fe;
+    }
+    .result-info h3, .detail-copy h2 { margin: 0; }
+    .meta-line {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--subtle);
+      margin-top: 8px;
+      font-size: 13px;
+    }
+    .result-info p, .detail-copy p { color: var(--muted); line-height: 1.75; }
+    .result-actions { margin-top: 14px; }
+    .side-panel ul { padding-left: 18px; margin: 0; }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .stat-item {
+      padding: 14px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .stat-item span { display: block; color: var(--subtle); font-size: 12px; margin-bottom: 6px; }
+    .version-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 16px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .tips-grid { grid-template-columns: repeat(2, 1fr); }
+    .empty-box {
+      padding: 18px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.04);
+      color: var(--muted);
+      border: 1px dashed rgba(255,255,255,0.14);
+    }
+    .site-footer {
+      margin-top: 34px;
+      text-align: center;
+      color: var(--subtle);
+      font-size: 13px;
+    }
+    @media (max-width: 980px) {
+      .hero-home, .feature-grid, .results-layout, .detail-layout, .tips-grid, .stats-grid {
+        grid-template-columns: 1fr;
+      }
+      .nav { flex-direction: column; align-items: flex-start; }
+    }
+    @media (max-width: 640px) {
+      .site-shell { width: min(100vw - 18px, 100%); }
+      .hero-copy h1, .page-head h1, .empty-state h1 { font-size: 34px; }
+      .section-block, .side-panel, .empty-state, .detail-summary, .mini-block, .result-card { padding: 18px; }
+      .version-item { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="site-shell">
+    <header class="site-header">
+      <nav class="nav">
+        <a class="brand" href="/">
+          <span class="brand-mark">⚡</span>
+          <span>
+            VSCode + GitHub Mirror
+            <span class="brand-sub">插件下载站 + Release 加速</span>
+          </span>
+        </a>
+        <div class="nav-links">
+          <a class="nav-link ${active === 'home' ? 'active' : ''}" href="/">首页</a>
+          <a class="nav-link ${active === 'extensions' ? 'active' : ''}" href="/extensions">插件</a>
+          <a class="nav-link ${active === 'github' ? 'active' : ''}" href="/github">GitHub 加速</a>
+        </div>
+      </nav>
+    </header>
+    <main>${body}</main>
+    <footer class="site-footer">
+      当前版本是前后端打通的一体化 Worker 页面版。后续还可以继续拆组件、补分类页和管理功能。
+    </footer>
+  </div>
+  <script>
+    function escapeHtml(str = '') {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+  </script>
+  ${scripts || ''}
+</body>
+</html>`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
