@@ -157,12 +157,14 @@ async function handleExtensionDetail(request, ctx, namespace, name) {
   }
 
   const payload = await upstreamRes.json();
-  const versions = Array.isArray(payload.allVersions)
-    ? payload.allVersions.map(v => ({
-        version: v.version,
-        downloadUrl: buildExtensionDownloadUrl(request, namespace, name, v.version),
-        sourceUrl: v.files?.download || null
-      }))
+  const versions = payload.allVersions && typeof payload.allVersions === 'object'
+    ? Object.entries(payload.allVersions)
+        .filter(([version]) => version !== 'latest')
+        .map(([version, sourceUrl]) => ({
+          version,
+          downloadUrl: buildExtensionDownloadUrl(request, namespace, name, version),
+          sourceUrl: sourceUrl || null
+        }))
     : [];
 
   const response = jsonResponse({
