@@ -288,6 +288,10 @@ function mapExtensionSearchResult(item) {
     displayName: item.displayName || `${namespace}.${name}`,
     description: item.description || '',
     version,
+    downloadCount: item.downloadCount || 0,
+    averageRating: item.averageRating || null,
+    reviewCount: item.reviewCount || 0,
+    timestamp: item.timestamp || null,
     iconUrl: item.files?.icon || item.iconUrl || null,
     sourceUrl: item.repository || item.homepage || null,
     detailPage: `/extensions/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
@@ -471,6 +475,11 @@ function renderExtensionsPage(origin) {
       <section class="card glass section-block">
         <div class="search-bar-row">
           <input id="ext-search-input" class="search-input" placeholder="例如：python / prettier / ms-python.python" />
+          <select id="ext-sort-select" class="toolbar-input compact-select">
+            <option value="downloads">按下载量</option>
+            <option value="name">按名称</option>
+            <option value="updated">按更新时间</option>
+          </select>
           <button id="ext-search-btn" class="btn btn-primary">搜索</button>
         </div>
         <div class="hot-grid compact" id="ext-hot-list">
@@ -498,6 +507,7 @@ function renderExtensionsPage(origin) {
     scripts: `
       <script>
         const input = document.getElementById('ext-search-input');
+        const sortSelect = document.getElementById('ext-sort-select');
         const btn = document.getElementById('ext-search-btn');
         const results = document.getElementById('ext-search-results');
         const statusBox = document.getElementById('ext-search-status');
@@ -513,21 +523,39 @@ function renderExtensionsPage(origin) {
           statusBox.textContent = '';
         }
 
-        function queryFromUrl() {
-          const q = new URLSearchParams(window.location.search).get('q') || '';
+        function stateFromUrl() {
+          const params = new URLSearchParams(window.location.search);
+          const q = params.get('q') || '';
+          const sort = params.get('sort') || 'downloads';
           if (q) input.value = q;
-          return q;
+          sortSelect.value = sort;
+          return { q, sort };
+        }
+
+        function sortResults(list, sort) {
+          const cloned = [...list];
+          if (sort === 'name') {
+            return cloned.sort((a, b) => String(a.displayName || '').localeCompare(String(b.displayName || '')));
+          }
+          if (sort === 'updated') {
+            return cloned.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+          }
+          return cloned.sort((a, b) => (b.downloadCount || 0) - (a.downloadCount || 0));
         }
 
         function card(item) {
           const icon = item.iconUrl ? '<img src="' + escapeHtml(item.iconUrl) + '" alt="icon">' : '<div class="icon-fallback">VS</div>';
+          const stats = [];
+          stats.push('下载量 ' + (item.downloadCount || 0));
+          stats.push('评论 ' + (item.reviewCount || 0));
+          stats.push('评分 ' + (item.averageRating ?? '暂无'));
           return (
             '<article class="result-card card glass">'
             + '<div class="result-top">'
             + '<div class="result-icon">' + icon + '</div>'
             + '<div class="result-info">'
             + '<h3>' + escapeHtml(item.displayName || (item.namespace + '.' + item.name)) + '</h3>'
-            + '<div class="meta-line"><code>' + escapeHtml(item.namespace + '.' + item.name) + '</code><span>v' + escapeHtml(item.version || 'unknown') + '</span></div>'
+            + '<div class="meta-line"><code>' + escapeHtml(item.namespace + '.' + item.name) + '</code><span>v' + escapeHtml(item.version || 'unknown') + '</span>' + (stats.length ? '<span>' + escapeHtml(stats.join(' · ')) + '</span>' : '') + '</div>'
             + '<p>' + escapeHtml(item.description || '暂无简介') + '</p>'
             + '</div></div>'
             + '<div class="result-actions">'
@@ -546,9 +574,11 @@ function renderExtensionsPage(origin) {
           }
           setStatus('正在搜索插件...', 'info');
           results.innerHTML = '';
+          const sort = sortSelect.value || 'downloads';
           if (pushState) {
             const next = new URL(window.location.href);
             next.searchParams.set('q', q);
+            next.searchParams.set('sort', sort);
             history.replaceState(null, '', next.toString());
           }
           try {
@@ -560,7 +590,8 @@ function renderExtensionsPage(origin) {
               return;
             }
             clearStatus();
-            results.innerHTML = data.results.map(card).join('');
+            const sorted = sortResults(data.results, sort);
+            results.innerHTML = sorted.map(card).join('');
           } catch (err) {
             setStatus(err.message || '搜索失败', 'error');
           }
@@ -568,13 +599,16 @@ function renderExtensionsPage(origin) {
 
         btn.addEventListener('click', () => search(input.value.trim()));
         input.addEventListener('keypress', (e) => { if (e.key === 'Enter') search(input.value.trim()); });
+        sortSelect.addEventListener('change', () => {
+          if (input.value.trim()) search(input.value.trim());
+        });
         hotButtons.forEach(btn => btn.addEventListener('click', () => {
           input.value = btn.dataset.query;
           search(btn.dataset.query);
         }));
 
-        const initial = queryFromUrl();
-        if (initial) search(initial, false);
+        const initialState = stateFromUrl();
+        if (initialState.q) search(initialState.q, false);
       </script>
     `
   });
@@ -603,9 +637,15 @@ function renderExtensionDetailPage(origin, namespace, name) {
           <div id="detail-status" class="status-box info">正在拉取详情...</div>
           <article id="detail-summary" class="card glass detail-summary hidden"></article>
           <article class="card glass section-block">
-            <div class="section-head">
-              <h2>版本列表</h2>
-              <a id="detail-openvsx-link" class="text-link" href="#" target="_blank" rel="noopener">Open VSX 页面</a>
+            <div class="section-head stack-mobile">
+              <div>
+                <h2>版本列表</h2>
+                <p class="section-sub">支持直接下载历史版本 VSIX</p>
+              </div>
+              <div class="section-tools">
+                <input id="version-filter-input" class="toolbar-input" placeholder="筛选版本，如 2024 / 1.2" />
+                <a id="detail-openvsx-link" class="text-link" href="#" target="_blank" rel="noopener">Open VSX 页面</a>
+              </div>
             </div>
             <div id="detail-version-list" class="version-list"></div>
           </article>
@@ -626,6 +666,8 @@ function renderExtensionDetailPage(origin, namespace, name) {
         const detailSummary = document.getElementById('detail-summary');
         const versionList = document.getElementById('detail-version-list');
         const openvsxLink = document.getElementById('detail-openvsx-link');
+        const versionFilterInput = document.getElementById('version-filter-input');
+        let allVersions = [];
 
         function setDetailStatus(message, type = 'info') {
           detailStatus.className = 'status-box ' + type;
@@ -635,6 +677,24 @@ function renderExtensionDetailPage(origin, namespace, name) {
         function formatStat(label, value) {
           if (value === null || value === undefined || value === '') return '';
           return '<div class="stat-item"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(String(value)) + '</strong></div>';
+        }
+
+        function renderVersions(list) {
+          if (!list || !list.length) {
+            versionList.innerHTML = '<div class="empty-box">没有匹配的版本。</div>';
+            return;
+          }
+          versionList.innerHTML = list.slice(0, 60).map(v =>
+            '<div class="version-item">'
+            + '<div class="version-meta">'
+            + '<strong>' + escapeHtml(v.version) + '</strong>'
+            + '<span class="version-sub">历史版本 VSIX 下载</span>'
+            + '</div>'
+            + '<div class="result-actions">'
+            + '<a class="btn btn-primary" href="' + escapeHtml(v.downloadUrl) + '" target="_blank">下载</a>'
+            + (v.sourceUrl ? '<a class="btn btn-secondary" href="' + escapeHtml(v.sourceUrl) + '" target="_blank">源地址</a>' : '')
+            + '</div></div>'
+          ).join('');
         }
 
         async function loadDetail() {
@@ -661,21 +721,15 @@ function renderExtensionDetailPage(origin, namespace, name) {
               + '</div>'
               + '</div></div>'
               + '<div class="stats-grid">'
-              + formatStat('最新版本', data.version)
-              + formatStat('下载量', data.stats && data.stats.downloadCount)
-              + formatStat('评分', data.stats && data.stats.averageRating)
-              + formatStat('评论数', data.stats && data.stats.reviewCount)
+              + formatStat('最新版本', data.version || '未知')
+              + formatStat('下载量', (data.stats && data.stats.downloadCount) ?? 0)
+              + formatStat('评分', (data.stats && data.stats.averageRating) ?? '暂无')
+              + formatStat('评论数', (data.stats && data.stats.reviewCount) ?? 0)
               + '</div>';
 
-            if (data.versions && data.versions.length) {
-              versionList.innerHTML = data.versions.slice(0, 25).map(v => 
-                '<div class="version-item">'
-                + '<div><strong>' + escapeHtml(v.version) + '</strong></div>'
-                + '<div class="result-actions">'
-                + '<a class="btn btn-primary" href="' + escapeHtml(v.downloadUrl) + '" target="_blank">下载</a>'
-                + (v.sourceUrl ? '<a class="btn btn-secondary" href="' + escapeHtml(v.sourceUrl) + '" target="_blank">源地址</a>' : '')
-                + '</div></div>'
-              ).join('');
+            allVersions = Array.isArray(data.versions) ? data.versions : [];
+            if (allVersions.length) {
+              renderVersions(allVersions);
             } else {
               versionList.innerHTML = '<div class="empty-box">没有拿到版本列表。</div>';
             }
@@ -686,6 +740,15 @@ function renderExtensionDetailPage(origin, namespace, name) {
             setDetailStatus(err.message || '详情加载失败', 'error');
           }
         }
+
+        versionFilterInput.addEventListener('input', () => {
+          const keyword = versionFilterInput.value.trim().toLowerCase();
+          if (!keyword) {
+            renderVersions(allVersions);
+            return;
+          }
+          renderVersions(allVersions.filter(v => String(v.version || '').toLowerCase().includes(keyword)));
+        });
 
         loadDetail();
       </script>
@@ -711,7 +774,16 @@ function renderGitHubPage(origin) {
           <input id="gh-url-input" class="search-input" placeholder="https://github.com/user/repo/releases/download/v1.0/file.zip" />
           <button id="gh-generate-btn" class="btn btn-primary">生成链接</button>
         </div>
+        <div class="os-selector-row">
+          <span class="selector-label">快捷选择系统</span>
+          <div class="hot-grid compact">
+            <button class="hot-chip hot-button gh-os-btn" data-os="windows">Windows</button>
+            <button class="hot-chip hot-button gh-os-btn" data-os="macos">macOS</button>
+            <button class="hot-chip hot-button gh-os-btn" data-os="linux">Linux</button>
+          </div>
+        </div>
         <div id="gh-status" class="status-box hidden"></div>
+        <div id="gh-os-suggestions" class="results-list"></div>
         <div id="gh-result" class="result-card card glass hidden"></div>
       </section>
 
@@ -740,6 +812,23 @@ function renderGitHubPage(origin) {
         const btn = document.getElementById('gh-generate-btn');
         const statusBox = document.getElementById('gh-status');
         const resultBox = document.getElementById('gh-result');
+        const suggestionsBox = document.getElementById('gh-os-suggestions');
+        const osButtons = Array.from(document.querySelectorAll('.gh-os-btn'));
+
+        const githubTemplates = {
+          windows: [
+            { label: 'VS Code Windows User Installer', value: 'https://github.com/microsoft/vscode/releases/download/1.85.0/VSCodeUserSetup-x64-1.85.0.exe' },
+            { label: 'VS Code Windows System Installer', value: 'https://github.com/microsoft/vscode/releases/download/1.85.0/VSCodeSetup-x64-1.85.0.exe' }
+          ],
+          macos: [
+            { label: 'VS Code macOS Universal', value: 'https://github.com/microsoft/vscode/releases/download/1.85.0/VSCode-darwin-universal.zip' },
+            { label: 'VS Code macOS Apple Silicon', value: 'https://github.com/microsoft/vscode/releases/download/1.85.0/VSCode-darwin-arm64.zip' }
+          ],
+          linux: [
+            { label: 'VS Code Linux deb x64', value: 'https://github.com/microsoft/vscode/releases/download/1.85.0/code_1.85.0-1702462158_amd64.deb' },
+            { label: 'VS Code Linux rpm x64', value: 'https://github.com/microsoft/vscode/releases/download/1.85.0/code-1.85.0-1702462296.el7.x86_64.rpm' }
+          ]
+        };
 
         function setStatus(message, type = 'info') {
           statusBox.className = 'status-box ' + type;
@@ -749,6 +838,29 @@ function renderGitHubPage(origin) {
         function clearStatus() {
           statusBox.className = 'status-box hidden';
           statusBox.textContent = '';
+        }
+
+        function renderOsSuggestions(os) {
+          const list = githubTemplates[os] || [];
+          if (!list.length) {
+            suggestionsBox.innerHTML = '';
+            return;
+          }
+          suggestionsBox.innerHTML = list.map(item =>
+            '<article class="result-card card glass">'
+            + '<h3>' + escapeHtml(item.label) + '</h3>'
+            + '<p class="wrap mono">' + escapeHtml(item.value) + '</p>'
+            + '<div class="result-actions">'
+            + '<button class="btn btn-secondary gh-fill-btn" data-url="' + escapeHtml(item.value) + '">填入上方</button>'
+            + '</div>'
+            + '</article>'
+          ).join('');
+          Array.from(document.querySelectorAll('.gh-fill-btn')).forEach(btn => {
+            btn.addEventListener('click', () => {
+              input.value = btn.dataset.url;
+              generate();
+            });
+          });
         }
 
         async function generate() {
@@ -788,6 +900,7 @@ function renderGitHubPage(origin) {
 
         btn.addEventListener('click', generate);
         input.addEventListener('keypress', (e) => { if (e.key === 'Enter') generate(); });
+        osButtons.forEach(btn => btn.addEventListener('click', () => renderOsSuggestions(btn.dataset.os)));
       </script>
     `
   });
@@ -975,6 +1088,30 @@ function baseHtml({ title, active, body, scripts }) {
     .section-block, .side-panel, .empty-state, .detail-summary { padding: 22px; }
     .mini-block { padding: 22px; }
     .mini-title, .section-head h2, .side-panel h3, .result-card h3 { margin: 0 0 12px; }
+    .section-sub {
+      margin: 0;
+      color: var(--subtle);
+      font-size: 13px;
+    }
+    .section-tools {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .toolbar-input {
+      min-width: 220px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.18);
+      color: var(--text);
+      padding: 12px 14px;
+      font: inherit;
+      outline: none;
+    }
+    .compact-select {
+      flex: 0 0 180px;
+    }
     .quick-link {
       display: block;
       padding: 12px 14px;
@@ -987,6 +1124,13 @@ function baseHtml({ title, active, body, scripts }) {
     .feature-grid {
       grid-template-columns: repeat(3, 1fr);
       margin-bottom: 24px;
+    }
+    .stack-mobile {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
     }
     .feature-card { padding: 22px; }
     .feature-card h3 { margin: 0 0 10px; }
@@ -1008,6 +1152,16 @@ function baseHtml({ title, active, body, scripts }) {
     }
     .hot-button { cursor: pointer; }
     .page-head { margin-bottom: 18px; }
+    .os-selector-row {
+      margin-top: 18px;
+    }
+    .selector-label {
+      display: inline-block;
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+    }
     .search-input, input {
       flex: 1;
       min-width: 240px;
@@ -1121,6 +1275,15 @@ function baseHtml({ title, active, body, scripts }) {
       border-radius: 16px;
       background: rgba(255,255,255,0.05);
       border: 1px solid rgba(255,255,255,0.08);
+    }
+    .version-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .version-sub {
+      color: var(--subtle);
+      font-size: 13px;
     }
     .tips-grid { grid-template-columns: repeat(2, 1fr); }
     .empty-box {
