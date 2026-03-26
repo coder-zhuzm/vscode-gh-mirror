@@ -141,10 +141,14 @@ async function handleExtensionRoutes(request, ctx) {
 }
 
 async function handleExtensionDetail(request, ctx, namespace, name) {
-  const cacheKey = new Request(request.url, { method: 'GET' });
-  const cached = await caches.default.match(cacheKey);
-  if (cached) {
-    return withCacheHeader(cached, 'HIT');
+  const url = new URL(request.url);
+  const bypassCache = url.searchParams.get('refresh') === '1';
+  const cacheKey = new Request(url.origin + url.pathname, { method: 'GET' });
+  if (!bypassCache) {
+    const cached = await caches.default.match(cacheKey);
+    if (cached) {
+      return withCacheHeader(cached, 'HIT');
+    }
   }
 
   const upstreamUrl = `${OPEN_VSX_API}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`;
@@ -165,6 +169,7 @@ async function handleExtensionDetail(request, ctx, namespace, name) {
           downloadUrl: buildExtensionDownloadUrl(request, namespace, name, version),
           sourceUrl: sourceUrl || null
         }))
+        .sort((a, b) => compareVersionsDesc(a.version, b.version))
     : [];
 
   const response = jsonResponse({
@@ -319,6 +324,25 @@ function isAllowedUpstream(input) {
   } catch {
     return false;
   }
+}
+
+function compareVersionsDesc(a, b) {
+  const normalize = (value) => String(value || '').split(/[^0-9A-Za-z]+/).filter(Boolean).map(part => {
+    return /^\d+$/.test(part) ? Number(part) : part.toLowerCase();
+  });
+  const pa = normalize(a);
+  const pb = normalize(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const va = pa[i];
+    const vb = pb[i];
+    if (va === undefined) return 1;
+    if (vb === undefined) return -1;
+    if (va === vb) continue;
+    if (typeof va === 'number' && typeof vb === 'number') return vb - va;
+    return String(vb).localeCompare(String(va));
+  }
+  return 0;
 }
 
 function isGitHubReleasePath(pathname) {
@@ -701,7 +725,7 @@ function renderExtensionDetailPage(origin, namespace, name) {
 
         async function loadDetail() {
           try {
-            const res = await fetch('/api/extensions/${encodedNs}/${encodedName}');
+            const res = await fetch('/api/extensions/${encodedNs}/${encodedName}?refresh=1');
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || '详情加载失败');
 
