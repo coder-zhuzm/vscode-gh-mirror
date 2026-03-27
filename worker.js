@@ -436,8 +436,8 @@ function renderHomePage(origin) {
       <section class="hero hero-home">
         <div class="hero-copy">
           <span class="badge">Cloudflare Worker</span>
-          <h1>插件下载 + GitHub 加速，放到一个站里</h1>
-          <p>搜索 VSCode 插件、查看版本、下载 VSIX；同时把 GitHub Release 链接转换成你自己的镜像下载地址。现在是一个能直接上手用的前端版本，不只是接口页。</p>
+          <h1>统一的插件下载与 GitHub Release 镜像入口</h1>
+          <p>支持搜索 VSCode 插件、查看版本信息并下载 VSIX，同时将 GitHub Release 附件地址转换为当前站点的镜像下载链接。提供可直接使用的前端页面与配套接口。</p>
           <div class="hero-actions">
             <a class="btn btn-primary" href="/extensions">搜索插件</a>
             <a class="btn btn-secondary" href="/github">GitHub 加速</a>
@@ -455,18 +455,18 @@ function renderHomePage(origin) {
 
       <section class="feature-grid">
         <article class="card glass feature-card">
-          <h3>VSCode 插件搜索</h3>
-          <p>接 Open VSX 搜索接口，支持关键字搜索、热门插件、详情查看和版本下载。</p>
+          <h3>VSCode 插件检索</h3>
+          <p>基于 Open VSX 搜索接口，支持关键字检索、热门插件展示、详情查看与版本下载。</p>
           <a class="text-link" href="/extensions">去插件页 →</a>
         </article>
         <article class="card glass feature-card">
-          <h3>GitHub Release 加速</h3>
-          <p>把标准 release 附件链接转换成你的 Worker 链接，支持边缘缓存和断点续传。</p>
+          <h3>GitHub Release 镜像</h3>
+          <p>将标准 Release 附件链接转换为 Worker 镜像下载链接，支持边缘缓存与断点续传。</p>
           <a class="text-link" href="/github">去加速页 →</a>
         </article>
         <article class="card glass feature-card">
           <h3>统一下载代理层</h3>
-          <p>GitHub 和 VSIX 下载共用一套代理逻辑，限制白名单源站，避免做成任意开放代理。</p>
+          <p>GitHub 与 VSIX 下载共用同一套代理逻辑，并限制为白名单源站，避免演变为任意开放代理。</p>
           <a class="text-link" href="${origin}/health">看健康状态 →</a>
         </article>
       </section>
@@ -494,7 +494,7 @@ function renderExtensionsPage(origin) {
         <div>
           <span class="badge">Open VSX</span>
           <h1>搜索 VSCode 插件</h1>
-          <p>支持按关键字或扩展 ID 搜索，结果里直接点详情或下载最新 VSIX。</p>
+          <p>支持按关键字或扩展 ID 搜索，并可直接进入详情页或下载最新 VSIX。</p>
         </div>
       </section>
 
@@ -522,9 +522,9 @@ function renderExtensionsPage(origin) {
           <div class="card glass side-panel">
             <h3>使用提示</h3>
             <ul>
-              <li>可以直接搜扩展 ID，例如 <code>ms-python.python</code></li>
-              <li>点击“查看详情”会进入详情页</li>
-              <li>点击“下载最新 VSIX”会走本站代理</li>
+              <li>可直接搜索扩展 ID，例如 <code>ms-python.python</code></li>
+              <li>点击“查看详情”可进入扩展详情页</li>
+              <li>点击“下载最新 VSIX”将通过本站代理下载</li>
             </ul>
           </div>
         </aside>
@@ -594,11 +594,11 @@ function renderExtensionsPage(origin) {
 
         async function search(q, pushState = true) {
           if (!q) {
-            setStatus('先输入关键字或扩展 ID。', 'error');
+            setStatus('请输入关键字或扩展 ID。', 'error');
             results.innerHTML = '';
             return;
           }
-          setStatus('正在搜索插件...', 'info');
+          setStatus('正在检索插件，请稍候…', 'info');
           results.innerHTML = '';
           const sort = sortSelect.value || 'downloads';
           if (pushState) {
@@ -612,7 +612,7 @@ function renderExtensionsPage(origin) {
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || '搜索失败');
             if (!data.results || !data.results.length) {
-              setStatus('没有找到匹配结果。', 'error');
+              setStatus('未找到匹配结果。', 'error');
               return;
             }
             clearStatus();
@@ -651,7 +651,7 @@ function renderExtensionDetailPage(origin, namespace, name) {
         <div>
           <span class="badge">Extension Detail</span>
           <h1 id="detail-title">${escapeHtml(namespace)}.${escapeHtml(name)}</h1>
-          <p id="detail-subtitle">正在加载插件信息...</p>
+          <p id="detail-subtitle">正在加载扩展信息...</p>
         </div>
         <div class="page-head-actions">
           <a class="btn btn-secondary" href="/extensions">返回搜索</a>
@@ -660,13 +660,13 @@ function renderExtensionDetailPage(origin, namespace, name) {
 
       <section class="detail-layout">
         <div class="detail-main">
-          <div id="detail-status" class="status-box info">正在拉取详情...</div>
+          <div id="detail-status" class="status-box info">正在获取详情信息...</div>
           <article id="detail-summary" class="card glass detail-summary hidden"></article>
           <article class="card glass section-block">
             <div class="section-head stack-mobile">
               <div>
                 <h2>版本列表</h2>
-                <p class="section-sub">支持直接下载历史版本 VSIX</p>
+                <p class="section-sub">支持直接下载历史版本的 VSIX 文件</p>
               </div>
               <div class="section-tools">
                 <input id="version-filter-input" class="toolbar-input" placeholder="筛选版本，如 2024 / 1.2" />
@@ -791,7 +791,7 @@ function renderGitHubPage(origin) {
         <div>
           <span class="badge">GitHub Release Mirror</span>
           <h1>生成 GitHub 下载加速链接</h1>
-          <p>把标准 GitHub release 附件地址贴进来，转换成你这个站自己的镜像下载链接。</p>
+          <p>将标准 GitHub Release 附件地址转换为当前站点的镜像下载链接，用于统一下载入口与缓存分发。</p>
         </div>
       </section>
 
@@ -825,9 +825,9 @@ function renderGitHubPage(origin) {
         <article class="card glass side-panel">
           <h3>不支持</h3>
           <ul>
-            <li>普通 GitHub 页面</li>
-            <li>任意外链代理</li>
-            <li>仓库源码页直链</li>
+            <li>普通 GitHub 页面链接</li>
+            <li>任意外部链接代理</li>
+            <li>源码浏览页直链</li>
           </ul>
         </article>
       </section>
@@ -892,12 +892,12 @@ function renderGitHubPage(origin) {
         async function generate() {
           const value = input.value.trim();
           if (!value) {
-            setStatus('先输入一个 GitHub release 附件链接。', 'error');
+            setStatus('请输入 GitHub Release 附件链接。', 'error');
             resultBox.className = 'result-card card glass hidden';
             resultBox.innerHTML = '';
             return;
           }
-          setStatus('正在生成镜像链接...', 'info');
+          setStatus('正在生成镜像链接，请稍候…', 'info');
           try {
             const res = await fetch('/api/github/resolve?url=' + encodeURIComponent(value));
             const data = await res.json();
@@ -914,7 +914,7 @@ function renderGitHubPage(origin) {
             document.getElementById('copy-gh-btn').addEventListener('click', async () => {
               try {
                 await navigator.clipboard.writeText(data.mirrorUrl);
-                setStatus('已复制到剪贴板。', 'success');
+                setStatus('镜像链接已复制到剪贴板。', 'success');
               } catch {
                 setStatus('复制失败，请手动复制。', 'error');
               }
@@ -1152,6 +1152,22 @@ function baseHtml({ title, active, body, scripts }) {
       grid-template-columns: repeat(3, 1fr);
       margin-bottom: 24px;
     }
+    .feature-card,
+    .side-panel,
+    .result-card,
+    .section-block,
+    .detail-summary {
+      transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+    }
+    .feature-card:hover,
+    .side-panel:hover,
+    .result-card:hover,
+    .section-block:hover,
+    .detail-summary:hover {
+      transform: translateY(-2px);
+      border-color: rgba(196,181,253,0.28);
+      box-shadow: 0 24px 56px rgba(0,0,0,0.38);
+    }
     .stack-mobile {
       display: flex;
       justify-content: space-between;
@@ -1279,6 +1295,14 @@ function baseHtml({ title, active, body, scripts }) {
     }
     .result-info p, .detail-copy p { color: var(--muted); line-height: 1.75; }
     .result-actions { margin-top: 14px; }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
     .side-panel ul { padding-left: 18px; margin: 0; }
     .stats-grid {
       display: grid;
@@ -1360,7 +1384,7 @@ function baseHtml({ title, active, body, scripts }) {
     </header>
     <main>${body}</main>
     <footer class="site-footer">
-      当前版本是前后端打通的一体化 Worker 页面版。后续还可以继续拆组件、补分类页和管理功能。
+      当前版本为前后端一体化的 Worker 页面实现，可继续扩展为组件化结构、分类页面与管理能力。
     </footer>
   </div>
   <script>

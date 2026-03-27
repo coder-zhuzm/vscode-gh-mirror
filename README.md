@@ -2,10 +2,10 @@
 
 > 默认中文说明 | [English](./README.en.md)
 
-一个基于 **Cloudflare Workers** 的二合一下载站：
+一个基于 **Cloudflare Workers** 的一体化下载服务：
 
-- **VSCode 插件站**：搜索 Open VSX 插件、查看详情、下载最新或历史版本 VSIX
-- **GitHub Release 加速站**：把 GitHub release 附件链接转换成你自己的镜像下载链接
+- **VSCode 插件下载站**：支持搜索 Open VSX 插件、查看详情、下载最新或历史版本 VSIX
+- **GitHub Release 镜像站**：将 GitHub Release 附件链接转换为当前站点的镜像下载链接
 
 ## 功能特性
 
@@ -17,11 +17,11 @@
 - 插件详情页显示统计信息与历史版本列表
 - 支持下载最新版本和历史版本 VSIX
 
-### GitHub Release 加速
+### GitHub Release 镜像
 - 输入 GitHub Release 附件地址
-- 自动生成 Worker 镜像链接
-- 支持缓存和断点续传
-- 页面内提供 Windows / macOS / Linux 快捷示例入口
+- 自动生成当前 Worker 的镜像下载链接
+- 支持缓存与断点续传
+- 页面内提供 Windows / macOS / Linux 示例入口
 
 ### 页面能力
 - 首页 `/`
@@ -45,7 +45,7 @@
 - `objects.githubusercontent.com`
 - `release-assets.githubusercontent.com`
 
-这不是通用开放代理，而是一个受限的实际下载站。
+本项目不是通用开放代理，而是面向特定下载场景的受限镜像服务。
 
 ## 缓存策略
 - 搜索结果：短缓存
@@ -73,9 +73,9 @@ compatibility_date = "2024-01-01"
 ```
 
 ## 项目定位
-- 轻量可部署的 VSCode 插件下载站
-- GitHub Release 加速站
-- 基于 Cloudflare Workers 的下载中枢
+- 轻量、易部署的 VSCode 插件下载站
+- 面向 GitHub Release 的镜像下载入口
+- 基于 Cloudflare Workers 的统一下载代理层
 
 ---
 

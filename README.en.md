@@ -2,10 +2,10 @@
 
 > [中文](./README.md) | English
 
-A dual-purpose **Cloudflare Workers** project for:
+An integrated **Cloudflare Workers** download service for:
 
 - **VSCode extension discovery and download** through Open VSX
-- **GitHub Release acceleration** through Worker-based mirror URLs
+- **GitHub Release mirroring** through Worker-based download URLs
 
 ## Features
 
@@ -18,10 +18,10 @@ A dual-purpose **Cloudflare Workers** project for:
 - Download latest and historical VSIX versions
 
 ### GitHub Release mirror
-- Paste a GitHub release asset URL
-- Generate a Worker mirror link
-- Support cache and range requests
-- Built-in OS quick examples for Windows / macOS / Linux
+- Paste a GitHub Release asset URL
+- Generate a Worker mirror download link
+- Support caching and range requests
+- Built-in example entries for Windows / macOS / Linux
 
 ### Pages
 - Home page `/`
@@ -45,7 +45,7 @@ A dual-purpose **Cloudflare Workers** project for:
 - `objects.githubusercontent.com`
 - `release-assets.githubusercontent.com`
 
-This is not an open generic proxy. It is a focused download site.
+This is not a generic open proxy. It is a restricted mirror service for defined download scenarios.
 
 ## Cache strategy
 - Search: short cache
@@ -73,9 +73,9 @@ compatibility_date = "2024-01-01"
 ```
 
 ## Positioning
-- Lightweight VSCode extension mirror site
-- GitHub Release accelerator
-- Download hub built on Cloudflare Workers
+- Lightweight and easy-to-deploy VSCode extension mirror site
+- GitHub Release download entry point
+- Unified download proxy layer built on Cloudflare Workers
 
 ---
 
