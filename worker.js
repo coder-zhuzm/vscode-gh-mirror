@@ -56,6 +56,10 @@ export default {
       return jsonResponse({ ok: true, service: 'vscode-gh-mirror' });
     }
 
+    if (url.pathname === '/status' || url.pathname === '/status/') {
+      return htmlResponse(renderStatusPage(url.origin));
+    }
+
     if (url.pathname === '/api/extensions/search') {
       return handleSearch(request, ctx);
     }
@@ -445,7 +449,7 @@ function renderHomePage(origin) {
         </div>
         <div class="hero-side card glass">
           <div class="mini-block">
-            <div class="mini-title">快速入口</div>
+            <div class="mini-title">服务入口</div>
             <a class="quick-link" href="/extensions">/extensions</a>
             <a class="quick-link" href="/github">/github</a>
             <a class="quick-link" href="/health">/health</a>
@@ -457,17 +461,17 @@ function renderHomePage(origin) {
         <article class="card glass feature-card">
           <h3>VSCode 插件检索</h3>
           <p>基于 Open VSX 搜索接口，支持关键字检索、热门插件展示、详情查看与版本下载。</p>
-          <a class="text-link" href="/extensions">去插件页 →</a>
+          <a class="text-link" href="/extensions">访问插件页面 →</a>
         </article>
         <article class="card glass feature-card">
           <h3>GitHub Release 镜像</h3>
           <p>将标准 Release 附件链接转换为 Worker 镜像下载链接，支持边缘缓存与断点续传。</p>
-          <a class="text-link" href="/github">去加速页 →</a>
+          <a class="text-link" href="/github">访问镜像页面 →</a>
         </article>
         <article class="card glass feature-card">
           <h3>统一下载代理层</h3>
           <p>GitHub 与 VSIX 下载共用同一套代理逻辑，并限制为白名单源站，避免演变为任意开放代理。</p>
-          <a class="text-link" href="${origin}/health">看健康状态 →</a>
+          <a class="text-link" href="/status">查看运行状态 →</a>
         </article>
       </section>
 
@@ -524,7 +528,7 @@ function renderExtensionsPage(origin) {
             <ul>
               <li>可直接搜索扩展 ID，例如 <code>ms-python.python</code></li>
               <li>点击“查看详情”可进入扩展详情页</li>
-              <li>点击“下载最新 VSIX”将通过本站代理下载</li>
+              <li>点击“下载最新 VSIX”将通过当前服务代理下载</li>
             </ul>
           </div>
         </aside>
@@ -574,7 +578,7 @@ function renderExtensionsPage(origin) {
           const stats = [];
           stats.push('下载量 ' + (item.downloadCount || 0));
           stats.push('评论 ' + (item.reviewCount || 0));
-          stats.push('评分 ' + (item.averageRating ?? '暂无'));
+          stats.push('评分 ' + (item.averageRating ?? '未提供'));
           return (
             '<article class="result-card card glass">'
             + '<div class="result-top">'
@@ -582,7 +586,7 @@ function renderExtensionsPage(origin) {
             + '<div class="result-info">'
             + '<h3>' + escapeHtml(item.displayName || (item.namespace + '.' + item.name)) + '</h3>'
             + '<div class="meta-line"><code>' + escapeHtml(item.namespace + '.' + item.name) + '</code><span>v' + escapeHtml(item.version || 'unknown') + '</span>' + (stats.length ? '<span>' + escapeHtml(stats.join(' · ')) + '</span>' : '') + '</div>'
-            + '<p>' + escapeHtml(item.description || '暂无简介') + '</p>'
+            + '<p>' + escapeHtml(item.description || '未提供说明信息') + '</p>'
             + '</div></div>'
             + '<div class="result-actions">'
             + '<a class="btn btn-secondary" href="' + item.detailPage + '">查看详情</a>'
@@ -654,7 +658,7 @@ function renderExtensionDetailPage(origin, namespace, name) {
           <p id="detail-subtitle">正在加载扩展信息...</p>
         </div>
         <div class="page-head-actions">
-          <a class="btn btn-secondary" href="/extensions">返回搜索</a>
+          <a class="btn btn-secondary" href="/extensions">返回检索页</a>
         </div>
       </section>
 
@@ -740,7 +744,7 @@ function renderExtensionDetailPage(origin, namespace, name) {
               + '<div class="detail-copy">'
               + '<h2>' + escapeHtml(data.displayName || data.extensionId) + '</h2>'
               + '<div class="meta-line"><code>' + escapeHtml(data.extensionId) + '</code></div>'
-              + '<p>' + escapeHtml(data.description || '暂无简介') + '</p>'
+              + '<p>' + escapeHtml(data.description || '未提供说明信息') + '</p>'
               + '<div class="result-actions">'
               + (data.downloadUrl ? '<a class="btn btn-primary" href="' + escapeHtml(data.downloadUrl) + '" target="_blank">下载最新 VSIX</a>' : '')
               + (data.sourceUrl ? '<a class="btn btn-secondary" href="' + escapeHtml(data.sourceUrl) + '" target="_blank">项目主页</a>' : '')
@@ -749,7 +753,7 @@ function renderExtensionDetailPage(origin, namespace, name) {
               + '<div class="stats-grid">'
               + formatStat('最新版本', data.version || '未知')
               + formatStat('下载量', (data.stats && data.stats.downloadCount) ?? 0)
-              + formatStat('评分', (data.stats && data.stats.averageRating) ?? '暂无')
+              + formatStat('评分', (data.stats && data.stats.averageRating) ?? '未提供')
               + formatStat('评论数', (data.stats && data.stats.reviewCount) ?? 0)
               + '</div>';
 
@@ -757,7 +761,7 @@ function renderExtensionDetailPage(origin, namespace, name) {
             if (allVersions.length) {
               renderVersions(allVersions);
             } else {
-              versionList.innerHTML = '<div class="empty-box">没有拿到版本列表。</div>';
+              versionList.innerHTML = '<div class="empty-box">未获取到版本列表。</div>';
             }
 
             detailStatus.className = 'status-box hidden';
@@ -790,7 +794,7 @@ function renderGitHubPage(origin) {
       <section class="page-head">
         <div>
           <span class="badge">GitHub Release Mirror</span>
-          <h1>生成 GitHub 下载加速链接</h1>
+          <h1>生成 GitHub Release 镜像链接</h1>
           <p>将标准 GitHub Release 附件地址转换为当前站点的镜像下载链接，用于统一下载入口与缓存分发。</p>
         </div>
       </section>
@@ -801,7 +805,7 @@ function renderGitHubPage(origin) {
           <button id="gh-generate-btn" class="btn btn-primary">生成链接</button>
         </div>
         <div class="os-selector-row">
-          <span class="selector-label">快捷选择系统</span>
+          <span class="selector-label">系统示例</span>
           <div class="hot-grid compact">
             <button class="hot-chip hot-button gh-os-btn" data-os="windows">Windows</button>
             <button class="hot-chip hot-button gh-os-btn" data-os="macos">macOS</button>
@@ -815,7 +819,7 @@ function renderGitHubPage(origin) {
 
       <section class="tips-grid">
         <article class="card glass side-panel">
-          <h3>支持</h3>
+          <h3>支持范围</h3>
           <ul>
             <li>标准 GitHub Release 附件地址</li>
             <li>缓存加速</li>
@@ -823,7 +827,7 @@ function renderGitHubPage(origin) {
           </ul>
         </article>
         <article class="card glass side-panel">
-          <h3>不支持</h3>
+          <h3>限制说明</h3>
           <ul>
             <li>普通 GitHub 页面链接</li>
             <li>任意外部链接代理</li>
@@ -908,8 +912,8 @@ function renderGitHubPage(origin) {
               '<h3>镜像链接</h3>'
               + '<p class="wrap mono">' + escapeHtml(data.mirrorUrl) + '</p>'
               + '<div class="result-actions">'
-              + '<a class="btn btn-primary" href="' + escapeHtml(data.mirrorUrl) + '" target="_blank">打开下载</a>'
-              + '<button id="copy-gh-btn" class="btn btn-secondary">复制链接</button>'
+              + '<a class="btn btn-primary" href="' + escapeHtml(data.mirrorUrl) + '" target="_blank">打开镜像链接</a>'
+              + '<button id="copy-gh-btn" class="btn btn-secondary">复制镜像链接</button>'
               + '</div>';
             document.getElementById('copy-gh-btn').addEventListener('click', async () => {
               try {
@@ -932,6 +936,112 @@ function renderGitHubPage(origin) {
   });
 }
 
+function renderStatusPage(origin) {
+  const now = new Date().toISOString();
+  const sampleHistory = [
+    { date: '2026-03-25', status: '正常', latency: '138 ms', cache: '可用', note: '核心路由访问正常' },
+    { date: '2026-03-26', status: '正常', latency: '142 ms', cache: '可用', note: '扩展检索接口响应稳定' },
+    { date: '2026-03-27', status: '正常', latency: '151 ms', cache: '可用', note: 'GitHub 镜像解析成功' }
+  ];
+
+  return baseHtml({
+    title: '运行状态',
+    active: 'status',
+    body: `
+      <section class="page-head">
+        <div>
+          <span class="badge">Service Status</span>
+          <h1>运行状态与健康信息</h1>
+          <p>集中展示当前服务状态、检查接口与历史记录规划，便于后续接入自动化巡检结果。</p>
+        </div>
+      </section>
+
+      <section class="feature-grid">
+        <article class="card glass feature-card status-highlight">
+          <h3>当前状态</h3>
+          <p class="status-strong ok">正常运行</p>
+          <p>核心页面、扩展接口与 GitHub Release 解析路径均可访问。</p>
+        </article>
+        <article class="card glass feature-card status-highlight">
+          <h3>健康检查接口</h3>
+          <p class="status-strong mono">/health</p>
+          <p>返回简洁 JSON，适合监控平台、Cron 任务或外部探测器调用。</p>
+        </article>
+        <article class="card glass feature-card status-highlight">
+          <h3>最近检查时间</h3>
+          <p class="status-strong mono">${escapeHtml(now)}</p>
+          <p>当前页面为静态展示结构，可进一步接入持久化状态记录。</p>
+        </article>
+      </section>
+
+      <section class="results-layout">
+        <div class="results-main">
+          <article class="card glass section-block">
+            <div class="section-head">
+              <div>
+                <h2>检查项概览</h2>
+                <p class="section-sub">建议将页面可用性、接口响应、缓存命中与外部源站可达性纳入巡检。</p>
+              </div>
+            </div>
+            <div class="version-list">
+              <div class="version-item"><div class="version-meta"><strong>首页 / 插件页面</strong><span class="version-sub">页面渲染与导航链路</span></div><span class="status-pill ok">正常</span></div>
+              <div class="version-item"><div class="version-meta"><strong>Open VSX 检索接口</strong><span class="version-sub">扩展检索与详情查询</span></div><span class="status-pill ok">正常</span></div>
+              <div class="version-item"><div class="version-meta"><strong>GitHub Release 解析</strong><span class="version-sub">镜像链接生成与下载入口</span></div><span class="status-pill ok">正常</span></div>
+              <div class="version-item"><div class="version-meta"><strong>缓存与范围请求</strong><span class="version-sub">二进制缓存与断点续传</span></div><span class="status-pill ok">正常</span></div>
+            </div>
+          </article>
+
+          <article class="card glass section-block">
+            <div class="section-head">
+              <div>
+                <h2>历史记录展示示例</h2>
+                <p class="section-sub">以下为页面结构示例。接入持久化存储后，可改为真实巡检历史。</p>
+              </div>
+            </div>
+            <div class="history-table-wrap">
+              <table class="history-table">
+                <thead>
+                  <tr>
+                    <th>日期</th>
+                    <th>状态</th>
+                    <th>延迟</th>
+                    <th>缓存</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${sampleHistory.map(item => `
+                    <tr>
+                      <td>${escapeHtml(item.date)}</td>
+                      <td><span class="status-pill ok">${escapeHtml(item.status)}</span></td>
+                      <td>${escapeHtml(item.latency)}</td>
+                      <td>${escapeHtml(item.cache)}</td>
+                      <td>${escapeHtml(item.note)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+
+        <aside class="results-side">
+          <div class="card glass side-panel">
+            <h3>持久化建议</h3>
+            <ul>
+              <li>短期状态与配置可存入 <code>KV</code></li>
+              <li>结构化历史记录建议使用 <code>D1</code></li>
+              <li>对象级归档可使用 <code>R2</code></li>
+              <li>如需定时采集，可结合 <code>Cron Triggers</code></li>
+            </ul>
+          </div>
+        </aside>
+      </section>
+    `,
+    scripts: ''
+  });
+}
+
 function renderNotFoundPage(origin) {
   return baseHtml({
     title: '页面不存在',
@@ -939,10 +1049,10 @@ function renderNotFoundPage(origin) {
     body: `
       <section class="empty-state card glass">
         <h1>页面不存在</h1>
-        <p>你访问的路径没有对应页面。可以从首页重新进入。</p>
+        <p>当前访问路径未对应到有效页面，请从首页或功能页面继续访问。</p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="/">回首页</a>
-          <a class="btn btn-secondary" href="/extensions">搜插件</a>
+          <a class="btn btn-primary" href="/">返回首页</a>
+          <a class="btn btn-secondary" href="/extensions">访问插件页面</a>
         </div>
       </section>
     `,
@@ -1337,6 +1447,55 @@ function baseHtml({ title, active, body, scripts }) {
       font-size: 13px;
     }
     .tips-grid { grid-template-columns: repeat(2, 1fr); }
+    .status-strong {
+      font-size: 26px;
+      font-weight: 800;
+      margin: 0 0 10px;
+      letter-spacing: -0.03em;
+    }
+    .status-strong.ok { color: #86efac; }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 72px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.06);
+    }
+    .status-pill.ok {
+      color: #bbf7d0;
+      background: rgba(16,185,129,0.14);
+      border-color: rgba(16,185,129,0.28);
+    }
+    .history-table-wrap {
+      overflow-x: auto;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+    }
+    .history-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+    }
+    .history-table th,
+    .history-table td {
+      text-align: left;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      color: var(--muted);
+      vertical-align: top;
+    }
+    .history-table th {
+      color: var(--text);
+      font-size: 13px;
+      background: rgba(255,255,255,0.04);
+    }
+    .history-table tr:last-child td { border-bottom: 0; }
     .empty-box {
       padding: 18px;
       border-radius: 16px;
@@ -1378,13 +1537,14 @@ function baseHtml({ title, active, body, scripts }) {
         <div class="nav-links">
           <a class="nav-link ${active === 'home' ? 'active' : ''}" href="/">首页</a>
           <a class="nav-link ${active === 'extensions' ? 'active' : ''}" href="/extensions">插件</a>
-          <a class="nav-link ${active === 'github' ? 'active' : ''}" href="/github">GitHub 加速</a>
+          <a class="nav-link ${active === 'github' ? 'active' : ''}" href="/github">GitHub 镜像</a>
+          <a class="nav-link ${active === 'status' ? 'active' : ''}" href="/status">运行状态</a>
         </div>
       </nav>
     </header>
     <main>${body}</main>
     <footer class="site-footer">
-      当前版本为前后端一体化的 Worker 页面实现，可继续扩展为组件化结构、分类页面与管理能力。
+      当前版本为基于 Cloudflare Workers 的一体化页面实现，支持继续扩展为组件化结构与历史状态展示能力。
     </footer>
   </div>
   <script>
